@@ -37,11 +37,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Prepare and verify Whisper Small
-        run: npm run prepare:models
-
-      - name: Check frontend
-        run: npm run build
+      - name: Build complete desktop application
+        run: npm run build:desktop
 
       - name: Check native main application
         run: cargo check --manifest-path src-tauri/Cargo.toml

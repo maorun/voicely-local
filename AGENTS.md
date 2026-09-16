@@ -25,8 +25,9 @@
 # Development commands
 
 - Install frontend dependencies: `npm install`
-- Check/build frontend: `npm run build`
+- Check/build frontend only: `npm run build`
 - Prepare and SHA-256 validate the bundled Whisper Small model: `npm run prepare:models`
+- Build the full desktop release prerequisites and Tauri bundle: `npm run build:desktop`
 - Build both native workers into `src-tauri/binaries`: `npm run prepare:workers`
 - Start desktop development: `npm run tauri dev`
 - Check Rust main app: `cargo check --manifest-path src-tauri/Cargo.toml`

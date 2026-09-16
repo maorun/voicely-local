@@ -9,7 +9,9 @@
     "tauri": "MACOSX_DEPLOYMENT_TARGET=11.0 tauri",
     "prepare:workers": "mkdir -p src-tauri/binaries && : > src-tauri/binaries/whisper-worker-aarch64-apple-darwin && : > src-tauri/binaries/llm-worker-aarch64-apple-darwin && cargo build --manifest-path src-tauri/Cargo.toml --features whisper-worker,llm-worker --bin whisper-worker --bin llm-worker && cp src-tauri/target/debug/whisper-worker src-tauri/binaries/whisper-worker-aarch64-apple-darwin && cp src-tauri/target/debug/llm-worker src-tauri/binaries/llm-worker-aarch64-apple-darwin",
     "prepare:models": "bash scripts/prepare-whisper-model.sh",
-    "dmg:user": "npm run prepare:models && npm run tauri build && bash scripts/create-user-dmg.sh"
+    "prebuild:desktop": "npm run prepare:models && npm run prepare:workers",
+    "build:desktop": "npm run tauri build",
+    "dmg:user": "npm run build:desktop && bash scripts/create-user-dmg.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
