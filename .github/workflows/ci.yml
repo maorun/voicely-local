@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and check macOS
+    runs-on: macos-14
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Prepare and verify Whisper Small
+        run: npm run prepare:models
+
+      - name: Check frontend
+        run: npm run build
+
+      - name: Check native main application
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Check isolated Whisper worker
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features whisper-worker --bin whisper-worker
+
+      - name: Check isolated LLM worker
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features llm-worker --bin llm-worker
+
+      - name: Check whitespace errors
+        run: git diff --check

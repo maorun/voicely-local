@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Voicely Local",
+  "version": "0.1.0",
+  "identifier": "com.voicely.local",
+  "build": {
+    "beforeDevCommand": "npm run prepare:workers && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run prepare:workers && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "Voicely Local", "width": 1120, "height": 760, "minWidth": 880, "minHeight": 620 }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "macOS": { "infoPlist": "Info.plist", "minimumSystemVersion": "11.0" },
+    "resources": ["resources/models/ggml-small.bin", "binaries/whisper-worker-aarch64-apple-darwin", "binaries/llm-worker-aarch64-apple-darwin"]
+  }
+}
