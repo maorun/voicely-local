@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -30,7 +30,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
 
@@ -38,7 +38,7 @@ jobs:
         run: npm ci
 
       - name: Restore verified Whisper Small model
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: src-tauri/resources/models/ggml-small.bin
           key: whisper-small-1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b-${{ runner.os }}-${{ runner.arch }}
