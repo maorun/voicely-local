@@ -62,7 +62,9 @@ fn has_verification_marker(path: &std::path::Path, checksum: &str) -> bool { let
 fn verify_model_file(path: &std::path::Path, expected: &str) -> Result<bool, String> {
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?; let mut hash = Sha256::new(); let mut buffer = [0u8; 262_144];
     loop { let read = file.read(&mut buffer).map_err(|e| e.to_string())?; if read == 0 { break; } hash.update(&buffer[..read]); }
-    Ok(format!("{:x}", hash.finalize()) == expected)
+    let digest = hash.finalize();
+    let actual = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    Ok(actual == expected)
 }
 fn model_is_installed(directory: &std::path::Path, model: &ModelSpec) -> bool { fs::metadata(directory.join(model.file)).map(|meta| meta.len() >= model.min_bytes).unwrap_or(false) }
 fn active_model_id(app: &AppHandle) -> Option<String> { fs::read_to_string(app.path().app_local_data_dir().ok()?.join(ACTIVE_MODEL_FILE)).ok().map(|value| value.trim().to_string()) }
