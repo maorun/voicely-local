@@ -21,12 +21,12 @@ fn main() -> Result<(), String> {
     let audio = fs::read(input).map_err(|e| format!("Audio konnte nicht gelesen werden: {e}"))?;
     let context = WhisperContext::new_with_params(&model, WhisperContextParameters::default()).map_err(|e| e.to_string())?;
     let mut state = context.create_state().map_err(|e| e.to_string())?;
-    let mut parameters = FullParams::new(SamplingStrategy::Greedy { best_of: 1 }); parameters.set_n_threads(4); parameters.set_translate(false); parameters.set_temperature(0.0); parameters.set_suppress_blank(true); parameters.set_suppress_non_speech_tokens(true);
+    let mut parameters = FullParams::new(SamplingStrategy::Greedy { best_of: 1 }); parameters.set_n_threads(4); parameters.set_translate(false); parameters.set_temperature(0.0); parameters.set_suppress_blank(true); parameters.set_suppress_nst(true);
     if language != "auto" { parameters.set_language(Some(&language)); }
     let samples = wav_to_samples(&audio)?;
     if samples.is_empty() { return Err("Die Aufnahme enthielt keine Audiodaten. Bitte sprich etwas länger.".into()); }
     state.full(parameters, &samples).map_err(|e| format!("Lokale Transkription fehlgeschlagen: {e}"))?;
-    let text = (0..state.full_n_segments().map_err(|e| e.to_string())?).filter_map(|index| state.full_get_segment_text(index).ok()).collect::<Vec<_>>().join("");
+    let text = state.as_iter().filter_map(|segment| segment.to_str().ok()).collect::<Vec<_>>().join("");
     if text.trim().is_empty() { return Err("Whisper hat keinen Text erkannt.".into()); }
     print!("{}", text.trim()); Ok(())
 }
