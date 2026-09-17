@@ -16,6 +16,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": ["icons/icon.icns"],
     "macOS": { "infoPlist": "Info.plist", "minimumSystemVersion": "11.0" },
     "resources": ["resources/models/ggml-small.bin", "binaries/whisper-worker-aarch64-apple-darwin", "binaries/llm-worker-aarch64-apple-darwin"]
   }
