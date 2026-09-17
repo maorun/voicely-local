@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { isRegistered, register, unregisterAll } from "@tauri-apps/plugin-global-shortcut";
+import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { recordWav, type AudioProcessing, type Recording } from "./audio";
 import { polishTranscript, type ProcessingLevel } from "./text";
@@ -62,7 +62,7 @@ export default function App() {
       }
     }
     void activateSavedShortcut();
-    return () => { disposed = true; shortcutRegistrationRef.current++; void unregisterAll(); };
+    return () => { disposed = true; shortcutRegistrationRef.current++; void unregister(settings.shortcut); };
   }, [ready, settings.shortcut]);
 
   useEffect(() => {
@@ -137,7 +137,7 @@ export default function App() {
   shortcutActionRef.current = (state) => { if (settings.recordingMode === "pushToTalk") { if (state === "Pressed") { pushHeldRef.current = true; void startRecording().then(() => { if (!pushHeldRef.current) void stop(); }); } else { pushHeldRef.current = false; void stop(); } } else if (state === "Pressed") { void toggleRecording(); } };
 
   commandShortcutActionRef.current = (state) => { if (settings.commandMode === "pushToTalk") { if (state === "Pressed") { commandPushHeldRef.current = true; void startCommandRecording().then(() => { if (!commandPushHeldRef.current) void stopCommand(); }); } else { commandPushHeldRef.current = false; void stopCommand(); } } else if (state === "Pressed") { if (recordingCommand) void cancelCommandRecording(); else void startCommandRecording(); } };
-  async function toggleShortcut() { if (shortcut) { await unregisterAll(); setShortcut(false); setStatus("Globaler Shortcut deaktiviert"); return; } try { await register(settings.shortcut, (event) => shortcutActionRef.current(event.state)); setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); } catch { setStatus("Der Shortcut ist bereits belegt oder nicht verfügbar."); } }
+  async function toggleShortcut() { if (shortcut) { await unregister(settings.shortcut); setShortcut(false); setStatus("Globaler Shortcut deaktiviert"); return; } try { await register(settings.shortcut, (event) => shortcutActionRef.current(event.state)); setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); } catch { setStatus("Der Shortcut ist bereits belegt oder nicht verfügbar."); } }
   function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElement>) {
     const modifierKeys = new Set(["Meta", "Control", "Alt", "Shift"]);
     if (modifierKeys.has(event.key)) return null;
@@ -152,7 +152,7 @@ export default function App() {
     if (!accelerator) return;
     setShortcutDraft(accelerator); setCapturingShortcut(false); setShortcutMessage(`Ausgewählt: ${accelerator}. Mit „Shortcut speichern und aktivieren“ wird die Verfügbarkeit geprüft.`); setStatus(`Shortcut ausgewählt: ${accelerator}.`);
   }
-  async function saveShortcut(): Promise<boolean> { const next = shortcutDraft.trim(); if (!next) { setShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return false; } setShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = settings.shortcut; try { if (shortcut) await unregisterAll(); await register(next, (event) => shortcutActionRef.current(event.state)); update("shortcut", next); setShortcut(true); setShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Shortcut gespeichert und aktiv: ${next}`); return true; } catch (error) { if (shortcut) { try { await register(previous, (event) => shortcutActionRef.current(event.state)); } catch { setShortcut(false); } } setShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Shortcut konnte nicht aktiviert werden: ${String(error)}`); return false; } }
+  async function saveShortcut(): Promise<boolean> { const next = shortcutDraft.trim(); if (!next) { setShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return false; } setShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = settings.shortcut; try { if (shortcut) await unregister(settings.shortcut); await register(next, (event) => shortcutActionRef.current(event.state)); update("shortcut", next); setShortcut(true); setShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Shortcut gespeichert und aktiv: ${next}`); return true; } catch (error) { if (shortcut) { try { await register(previous, (event) => shortcutActionRef.current(event.state)); } catch { setShortcut(false); } } setShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Shortcut konnte nicht aktiviert werden: ${String(error)}`); return false; } }
 
   async function saveCommandShortcut() { const next = commandShortcutDraft.trim(); if (!next) { setCommandShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return; } setCommandShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = settings.commandShortcut; try { await register(next, (event) => commandShortcutActionRef.current(event.state)); update("commandShortcut", next); setCommandShortcut(true); setCommandShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Sprachbefehl-Shortcut gespeichert und aktiv: ${next}`); } catch (error) { setCommandShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Sprachbefehl-Shortcut konnte nicht aktiviert werden: ${String(error)}`); } }
 
