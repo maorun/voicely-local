@@ -568,7 +568,7 @@ pub fn run() {
             .title("Voicely Diktat").inner_size(370.0, 96.0).center().decorations(false)
             .always_on_top(true).skip_taskbar(true).resizable(false).visible(false).build()?;
         Ok(())
-    }).plugin(tauri_plugin_clipboard_manager::init()).plugin(tauri_plugin_global_shortcut::Builder::new().build()).plugin(tauri_plugin_opener::init())
+    }).plugin(tauri_plugin_clipboard_manager::init()).plugin(tauri_plugin_global_shortcut::Builder::new().build()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
       .invoke_handler(tauri::generate_handler![initialize_local_engine, get_system_status, request_accessibility_permission, read_diagnostic_log, log_diagnostic, clear_diagnostic_log, list_text_models, download_text_model, cancel_text_model_download, delete_text_model, select_text_model, list_whisper_models, download_whisper_model, select_whisper_model, delete_whisper_model, rewrite_local, cancel_local_rewrite, warm_up_text_model, show_dictation_overlay, hide_dictation_overlay, execute_voice_command, frontmost_application_name, paste_into_active_app, transcribe_local])
       .run(tauri::generate_context!()).expect("Fehler beim Starten von Voicely Local");
 }
