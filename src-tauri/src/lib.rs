@@ -51,8 +51,26 @@ fn bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     if !path.is_file() { return Err("Das integrierte Sprachmodell fehlt. Bitte die App erneut installieren.".into()); }
     Ok(path)
 }
+fn migrate_legacy_text_models(current_root: &std::path::Path, current_models: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let legacy_root = PathBuf::from(home).join("Library/Application Support/com.example.voicelylocal");
+        let legacy_models = legacy_root.join("text-models");
+        let current_empty = !current_models.exists() || fs::read_dir(current_models).map(|mut entries| entries.next().is_none()).unwrap_or(false);
+        // Migrate only into an empty new store; never overwrite a newer partial or
+        // downloaded model. Rename preserves multi-gigabyte GGUF files atomically.
+        if legacy_models.is_dir() && current_empty {
+            let _ = fs::remove_dir_all(current_models); let _ = fs::create_dir_all(current_root);
+            if fs::rename(&legacy_models, current_models).is_ok() {
+                let legacy_active = legacy_root.join(ACTIVE_MODEL_FILE); let current_active = current_root.join(ACTIVE_MODEL_FILE);
+                if !current_active.exists() && legacy_active.is_file() { let _ = fs::rename(legacy_active, current_active); }
+            }
+        }
+    }
+}
 fn text_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let directory = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("text-models");
+    let root = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let directory = root.join("text-models"); migrate_legacy_text_models(&root, &directory);
     fs::create_dir_all(&directory).map_err(|e| format!("Modellordner konnte nicht erstellt werden: {e}"))?; Ok(directory)
 }
 fn spec(id: &str) -> Result<&'static ModelSpec, String> { TEXT_MODELS.iter().find(|model| model.id == id).ok_or_else(|| "Unbekanntes Textmodell.".into()) }
