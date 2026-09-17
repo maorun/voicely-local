@@ -1,0 +1,53 @@
+name: Release build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Build user DMG for Apple Silicon
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - name: Restore verified Whisper Small model
+        uses: actions/cache@v6.1.0
+        with:
+          path: src-tauri/resources/models/ggml-small.bin
+          key: whisper-small-1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build user-scoped DMG
+        run: npm run dmg:user
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Voicely-Local-aarch64-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
