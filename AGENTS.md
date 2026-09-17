@@ -59,6 +59,11 @@
 - Keep auto-stop disabled for push-to-talk. The default silence timeout is 12 seconds and must remain user-configurable.
 - Any action that replaces editor text should preserve the original text until local streaming completes, so cancellation/error recovery can restore it.
 
+# Git workflow after merged pull requests
+
+- After a pull request is merged, synchronise the local workspace to `origin/master` with a fast-forward-only pull.
+- Delete the corresponding local feature branch after the successful sync. Squash-merged branches may require `git branch -D <branch>` because their original commits are not in the merge graph.
+
 # Validation before handoff
 
 - Run `npm run build` after frontend changes.
