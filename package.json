@@ -9,23 +9,25 @@
     "tauri": "MACOSX_DEPLOYMENT_TARGET=11.0 tauri",
     "prepare:workers": "mkdir -p src-tauri/binaries && : > src-tauri/binaries/whisper-worker-aarch64-apple-darwin && : > src-tauri/binaries/llm-worker-aarch64-apple-darwin && cargo build --manifest-path src-tauri/Cargo.toml --features whisper-worker,llm-worker --bin whisper-worker --bin llm-worker && cp src-tauri/target/debug/whisper-worker src-tauri/binaries/whisper-worker-aarch64-apple-darwin && cp src-tauri/target/debug/llm-worker src-tauri/binaries/llm-worker-aarch64-apple-darwin",
     "prepare:models": "bash scripts/prepare-whisper-model.sh",
-    "dmg:user": "npm run prepare:models && npm run tauri build && bash scripts/create-user-dmg.sh"
+    "prebuild:desktop": "npm run prepare:models && npm run prepare:workers",
+    "build:desktop": "npm run tauri build",
+    "dmg:user": "npm run build:desktop && bash scripts/create-user-dmg.sh"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0",
-    "@tauri-apps/plugin-clipboard-manager": "^2.2.1",
-    "@tauri-apps/plugin-global-shortcut": "^2.2.0",
-    "@tauri-apps/plugin-opener": "^2.2.5",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.2",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "lucide-react": "^1.46.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.1",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.6.3",
-    "vite": "^6.0.1"
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
   }
 }
