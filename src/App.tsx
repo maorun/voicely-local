@@ -8,6 +8,7 @@ import { recordWav, type AudioProcessing, type Recording } from "./audio";
 import { polishTranscript, type ProcessingLevel } from "./text";
 import Onboarding from "./Onboarding";
 import VoiceCommandsSettings from "./VoiceCommandsSettings";
+import { ensureGlobalShortcut, replaceGlobalShortcut, type GlobalShortcutApi } from "./shortcuts";
 import { addHistoryEntry, clearHistory, loadHistory, removeHistoryEntry, type DictationEntry } from "./history";
 
 type RecordingMode = "toggle" | "pushToTalk";
@@ -39,7 +40,7 @@ export default function App() {
   const [autostartEnabled, setAutostartEnabled] = useState(false); const [autostartMessage, setAutostartMessage] = useState(""); const [whisperModels, setWhisperModels] = useState<TextModel[]>([]); const [whisperAction, setWhisperAction] = useState<string | null>(null); const [whisperMessage, setWhisperMessage] = useState(""); const [toast, setToast] = useState<{ title: string; subtitle: string } | null>(null);
   const [modelWarming, setModelWarming] = useState(false); const [capturingShortcut, setCapturingShortcut] = useState(false); const [commandDraft, setCommandDraft] = useState({ phrase: "", appPath: "" }); const [shortcutMessage, setShortcutMessage] = useState(""); const activationTimeoutRef = useRef<number | null>(null); const [shortcutDraft, setShortcutDraft] = useState(settings.shortcut); const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]); const [onboarding, setOnboarding] = useState(() => localStorage.getItem("voicely-onboarding-completed") !== "true"); const [microphonePermission, setMicrophonePermission] = useState<PermissionState | "unsupported">("prompt");
   const [commandShortcut, setCommandShortcut] = useState(false); const [recordingCommand, setRecordingCommand] = useState(false); const [capturingCommandShortcut, setCapturingCommandShortcut] = useState(false); const [commandShortcutDraft, setCommandShortcutDraft] = useState(settings.commandShortcut); const [commandShortcutMessage, setCommandShortcutMessage] = useState(""); const [commandEditIndex, setCommandEditIndex] = useState<number | null>(null); const [commandEditDraft, setCommandEditDraft] = useState({ phrase: "", appPath: "" });
-  const recordingStartedAtRef = useRef<number | null>(null); const shortcutRegistrationRef = useRef(0); const commandShortcutRegistrationRef = useRef(0); const generatedWordsRef = useRef(0); const stopRef = useRef<Recording | null>(null); const silenceStartedAtRef = useRef<number | null>(null); const autoStoppingRef = useRef(false); const pushHeldRef = useRef(false); const commandPushHeldRef = useRef(false); const rewriteRequestRef = useRef<string | null>(null); const cancelRef = useRef<() => void>(() => undefined); const shortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined); const commandShortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
+  const recordingStartedAtRef = useRef<number | null>(null); const activeShortcutRef = useRef<string | null>(null); const activeCommandShortcutRef = useRef<string | null>(null); const shortcutRegistrationRef = useRef(0); const commandShortcutRegistrationRef = useRef(0); const generatedWordsRef = useRef(0); const stopRef = useRef<Recording | null>(null); const silenceStartedAtRef = useRef<number | null>(null); const autoStoppingRef = useRef(false); const pushHeldRef = useRef(false); const commandPushHeldRef = useRef(false); const rewriteRequestRef = useRef<string | null>(null); const cancelRef = useRef<() => void>(() => undefined); const shortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined); const commandShortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
   useEffect(() => localStorage.setItem("voicely-settings", JSON.stringify(settings)), [settings]);
   useEffect(() => { if (!navigator.permissions) { setMicrophonePermission("unsupported"); return; } void navigator.permissions.query({ name: "microphone" as PermissionName }).then((permission) => { setMicrophonePermission(permission.state); permission.onchange = () => setMicrophonePermission(permission.state); }).catch(() => setMicrophonePermission("unsupported")); }, []);
   useEffect(() => { const refresh = async () => { const devices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput"); setMicrophones(devices); if (settings.microphoneId !== "default" && !devices.some((device) => device.deviceId === settings.microphoneId)) setSettings((current) => ({ ...current, microphoneId: "default" })); }; void refresh(); navigator.mediaDevices.addEventListener("devicechange", refresh); return () => navigator.mediaDevices.removeEventListener("devicechange", refresh); }, [settings.microphoneId]);
@@ -50,37 +51,50 @@ export default function App() {
   useEffect(() => { let unlisten: (() => void) | undefined; void listen<RewriteToken>("rewrite-token", (event) => { if (event.payload.requestId === rewriteRequestRef.current) { const words = event.payload.token.trim().split(/\s+/).filter(Boolean).length; generatedWordsRef.current += words; setStatus(`Schreibe lokal … ${generatedWordsRef.current} Wörter`); setText((current) => current + event.payload.token); } }).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
   useEffect(() => { let unlisten: (() => void) | undefined; void listen<DownloadProgress>("model-download-progress", (event) => setDownloadProgress((current) => ({ ...current, [event.payload.modelId]: event.payload }))).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
   useEffect(() => { let unlisten: (() => void) | undefined; void listen<{ modelId: string; phase: string; message: string }>("model-activation-status", (event) => { setModelMessage(event.payload.message); if (event.payload.phase === "activated" || event.payload.phase === "error") { if (activationTimeoutRef.current) { window.clearTimeout(activationTimeoutRef.current); activationTimeoutRef.current = null; } } }).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
+  const shortcutApi: GlobalShortcutApi = { isRegistered, register, unregister };
+
   useEffect(() => {
     if (!ready) return;
-    let disposed = false; const registration = ++shortcutRegistrationRef.current;
-    async function activateSavedShortcut() {
-      try {
-        // Dev hot reload and a previously running app can leave the shortcut
-        // registered already. Treat that state as success rather than failing.
-        if (!await isRegistered(settings.shortcut)) await register(settings.shortcut, (event) => shortcutActionRef.current(event.state));
-        if (!disposed && registration === shortcutRegistrationRef.current) { setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); }
-      } catch (error) {
-        if (!disposed && registration === shortcutRegistrationRef.current) { setShortcut(false); setStatus(`Gespeicherter Shortcut konnte nicht aktiviert werden: ${String(error)}`); }
+    const registration = ++shortcutRegistrationRef.current;
+    const savedShortcut = settings.shortcut;
+    void ensureGlobalShortcut(savedShortcut, (event) => shortcutActionRef.current(event.state), shortcutApi).then(() => {
+      if (registration !== shortcutRegistrationRef.current) {
+        if (shortcutRegistrationRef.current === registration + 1) void unregister(savedShortcut);
+        return;
       }
-    }
-    void activateSavedShortcut();
-    return () => { disposed = true; shortcutRegistrationRef.current++; void unregister(settings.shortcut); };
-  }, [ready, settings.shortcut]);
+      activeShortcutRef.current = savedShortcut;
+      setShortcut(true);
+      setStatus(`Shortcut aktiv: ${savedShortcut}`);
+    }).catch((error) => {
+      if (registration === shortcutRegistrationRef.current) { setShortcut(false); setStatus(`Gespeicherter Shortcut konnte nicht aktiviert werden: ${String(error)}`); }
+    });
+    return () => {
+      shortcutRegistrationRef.current++;
+      const active = activeShortcutRef.current;
+      activeShortcutRef.current = null;
+      if (active) void unregister(active);
+    };
+  }, [ready]);
 
   useEffect(() => {
     if (!ready || !settings.commandShortcut) return;
-    let disposed = false; const registration = ++commandShortcutRegistrationRef.current;
-    async function activateCommandShortcut() {
-      try {
-        if (!await isRegistered(settings.commandShortcut)) await register(settings.commandShortcut, (event) => commandShortcutActionRef.current(event.state));
-        if (!disposed && registration === commandShortcutRegistrationRef.current) setCommandShortcut(true);
-      } catch (error) {
-        if (!disposed && registration === commandShortcutRegistrationRef.current) setCommandShortcut(false);
+    const registration = ++commandShortcutRegistrationRef.current;
+    const savedShortcut = settings.commandShortcut;
+    void ensureGlobalShortcut(savedShortcut, (event) => commandShortcutActionRef.current(event.state), shortcutApi).then(() => {
+      if (registration !== commandShortcutRegistrationRef.current) {
+        if (commandShortcutRegistrationRef.current === registration + 1) void unregister(savedShortcut);
+        return;
       }
-    }
-    void activateCommandShortcut();
-    return () => { disposed = true; commandShortcutRegistrationRef.current++; };
-  }, [ready, settings.commandShortcut]);
+      activeCommandShortcutRef.current = savedShortcut;
+      setCommandShortcut(true);
+    }).catch(() => { if (registration === commandShortcutRegistrationRef.current) setCommandShortcut(false); });
+    return () => {
+      commandShortcutRegistrationRef.current++;
+      const active = activeCommandShortcutRef.current;
+      activeCommandShortcutRef.current = null;
+      if (active) void unregister(active);
+    };
+  }, [ready]);
 
   const stop = useCallback(async () => {
     if (!stopRef.current) return;
@@ -139,7 +153,7 @@ export default function App() {
   shortcutActionRef.current = (state) => { if (settings.recordingMode === "pushToTalk") { if (state === "Pressed") { pushHeldRef.current = true; void startRecording().then(() => { if (!pushHeldRef.current) void stop(); }); } else { pushHeldRef.current = false; void stop(); } } else if (state === "Pressed") { void toggleRecording(); } };
 
   commandShortcutActionRef.current = (state) => { if (settings.commandMode === "pushToTalk") { if (state === "Pressed") { commandPushHeldRef.current = true; void startCommandRecording().then(() => { if (!commandPushHeldRef.current) void stopCommand(); }); } else { commandPushHeldRef.current = false; void stopCommand(); } } else if (state === "Pressed") { if (recordingCommand) void cancelCommandRecording(); else void startCommandRecording(); } };
-  async function toggleShortcut() { if (shortcut) { await unregister(settings.shortcut); setShortcut(false); setStatus("Globaler Shortcut deaktiviert"); return; } try { await register(settings.shortcut, (event) => shortcutActionRef.current(event.state)); setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); } catch { setStatus("Der Shortcut ist bereits belegt oder nicht verfügbar."); } }
+  async function toggleShortcut() { if (shortcut) { const active = activeShortcutRef.current; if (active) await unregister(active); activeShortcutRef.current = null; setShortcut(false); setStatus("Globaler Shortcut deaktiviert"); return; } try { await ensureGlobalShortcut(settings.shortcut, (event) => shortcutActionRef.current(event.state), shortcutApi); activeShortcutRef.current = settings.shortcut; setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); } catch { setStatus("Der Shortcut ist bereits belegt oder nicht verfügbar."); } }
   function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElement>) {
     const modifierKeys = new Set(["Meta", "Control", "Alt", "Shift"]);
     if (modifierKeys.has(event.key)) return null;
@@ -154,9 +168,9 @@ export default function App() {
     if (!accelerator) return;
     setShortcutDraft(accelerator); setCapturingShortcut(false); setShortcutMessage(`Ausgewählt: ${accelerator}. Mit „Shortcut speichern und aktivieren“ wird die Verfügbarkeit geprüft.`); setStatus(`Shortcut ausgewählt: ${accelerator}.`);
   }
-  async function saveShortcut(): Promise<boolean> { const next = shortcutDraft.trim(); if (!next) { setShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return false; } setShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = settings.shortcut; try { if (shortcut) await unregister(settings.shortcut); await register(next, (event) => shortcutActionRef.current(event.state)); update("shortcut", next); setShortcut(true); setShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Shortcut gespeichert und aktiv: ${next}`); return true; } catch (error) { if (shortcut) { try { await register(previous, (event) => shortcutActionRef.current(event.state)); } catch { setShortcut(false); } } setShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Shortcut konnte nicht aktiviert werden: ${String(error)}`); return false; } }
+  async function saveShortcut(): Promise<boolean> { const next = shortcutDraft.trim(); if (!next) { setShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return false; } setShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = activeShortcutRef.current; try { await replaceGlobalShortcut(previous, next, (event) => shortcutActionRef.current(event.state), shortcutApi); activeShortcutRef.current = next; update("shortcut", next); setShortcut(true); setShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Shortcut gespeichert und aktiv: ${next}`); return true; } catch (error) { activeShortcutRef.current = previous; setShortcut(previous !== null); setShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Shortcut konnte nicht aktiviert werden: ${String(error)}`); return false; } }
 
-  async function saveCommandShortcut() { const next = commandShortcutDraft.trim(); if (!next) { setCommandShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return; } setCommandShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = settings.commandShortcut; try { await register(next, (event) => commandShortcutActionRef.current(event.state)); update("commandShortcut", next); setCommandShortcut(true); setCommandShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Sprachbefehl-Shortcut gespeichert und aktiv: ${next}`); } catch (error) { setCommandShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Sprachbefehl-Shortcut konnte nicht aktiviert werden: ${String(error)}`); } }
+  async function saveCommandShortcut() { const next = commandShortcutDraft.trim(); if (!next) { setCommandShortcutMessage("Bitte zuerst eine Tastenkombination drücken."); return; } setCommandShortcutMessage(`Prüfe und aktiviere ${next} …`); const previous = activeCommandShortcutRef.current; try { await replaceGlobalShortcut(previous, next, (event) => commandShortcutActionRef.current(event.state), shortcutApi); activeCommandShortcutRef.current = next; update("commandShortcut", next); setCommandShortcut(true); setCommandShortcutMessage(`✓ ${next} ist verfügbar und wurde aktiviert.`); setStatus(`Sprachbefehl-Shortcut gespeichert und aktiv: ${next}`); } catch (error) { activeCommandShortcutRef.current = previous; setCommandShortcut(previous !== null); setCommandShortcutMessage(`✕ ${next} konnte nicht registriert werden. Die Kombination ist ungültig oder bereits von macOS bzw. einer anderen App belegt.`); setStatus(`Sprachbefehl-Shortcut konnte nicht aktiviert werden: ${String(error)}`); } }
 
   function captureCommandShortcut(event: React.KeyboardEvent<HTMLInputElement>) { event.preventDefault(); if (event.key === "Escape") { setCapturingCommandShortcut(false); setCommandShortcutDraft(settings.commandShortcut); return; } const accelerator = acceleratorFromKeyboardEvent(event); if (!accelerator) return; setCommandShortcutDraft(accelerator); setCapturingCommandShortcut(false); setCommandShortcutMessage(`Ausgewählt: ${accelerator}. Mit „Speichern" wird die Verfügbarkeit geprüft.`); setStatus(`Sprachbefehl-Shortcut ausgewählt: ${accelerator}.`); }
 

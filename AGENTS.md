@@ -14,6 +14,7 @@
 - `src/audio.ts` — browser/WebView microphone capture, PCM/WAV encoding, audio level, silence detection, and constraints.
 - `src/text.ts` — deterministic local text cleanup; keep it content-preserving.
 - `src/history.ts` — local-only dictation history persistence and retention limits.
+- `src/shortcuts.ts` / `src/shortcuts.test.ts` — atomic global-shortcut registration, rollback, and lifecycle regression tests.
 - `src/styles.css` — shared main-window and overlay styling.
 - `src-tauri/src/lib.rs` — Tauri commands, local model download/validation, worker lifecycle, overlay, macOS paste automation, and system checks.
 - `src-tauri/src/bin/whisper-worker.rs` — isolated Whisper worker. Keep Whisper dependencies out of the main process.
@@ -30,7 +31,8 @@
 
 # Development commands
 
-- Install frontend dependencies: `npm install`
+- Install locked frontend dependencies reproducibly: `npm ci` (Node.js 24+).
+- Run frontend/unit regression tests: `npm test`.
 - Check/build frontend only: `npm run build`
 - Prepare and SHA-256 validate the bundled Whisper Small model: `npm run prepare:models`
 - Build the full desktop release prerequisites and Tauri bundle: `npm run build:desktop`
@@ -49,6 +51,7 @@
 - Drain worker `stdout` and `stderr` concurrently from process start. Native model libraries can emit enough diagnostics to deadlock a child whose stderr pipe is not continuously read.
 - Run downloads, full-file SHA-256 checks, model warm-up, and native inference in background tasks; never block the Tauri/UI thread. Always surface an explicit UI progress or timeout state.
 - The LLM worker is persistent for a 5-minute idle period, accepts one generation at a time, uses request IDs for streaming/cancellation, and must have bounded request timeouts plus cleanup.
+- On macOS, terminate llama.cpp/ggml Metal workers without normal C++ teardown if it crashes in Metal residency-set destructors; ensure process-exit handling cannot take down or make the main app appear to crash.
 - Qwen3 prompts must disable reasoning (`/no_think` and a closed empty `<think>` block), otherwise hidden reasoning makes short writing actions appear slow.
 - Worker binaries must be built for the target architecture and bundled as resources. Any release packaging change must verify that the workers are executable inside `.app`.
 - macOS auto-paste requires Accessibility permission. Do not present it as available unless the local system-status check confirms permission.
@@ -61,6 +64,7 @@
 
 - Whisper Small is the bundled fallback/default model. Optional models must be explicit user downloads.
 - Downloads must be resumable, cancellable, atomically finalized (`.part` then rename), and validated before activation.
+- A full SHA-256 check of a multi-GB model must happen in a background task with explicit progress. Store a size-bound verification marker after success so normal model switching and app startup do not repeatedly rehash the file.
 - Use SHA-256 validation for downloaded GGUF models. Never activate a model that is incomplete or fails validation.
 - Active model IDs are local preferences. On failed download, cancellation, deletion, or validation failure, retain the previous active model.
 - Do not commit bundled model blobs. Keep `ggml-small.bin` ignored and obtain it through `npm run prepare:models`; package it only into release artifacts.
@@ -75,13 +79,17 @@
 - Keep auto-stop disabled for push-to-talk. The default silence timeout is 12 seconds and must remain user-configurable.
 - Any action that replaces editor text should preserve the original text until local streaming completes, so cancellation/error recovery can restore it.
 - Keep dictation and voice-command shortcuts independently registered. Never use `unregisterAll()` while changing one shortcut, because it silently disables the other.
+- Apply a saved shortcut immediately: atomically unregister the actually active old shortcut, register the new one, and restore the old registration if the new accelerator is unavailable. Track the active registration separately from persisted settings so cleanup never targets stale state.
+- Treat global-shortcut registration as an asynchronous owned resource. React `StrictMode` can overlap effect setup/cleanup in development; serialize or generation-guard registration so stale cleanup cannot unregister a newer handler and concurrent setup cannot create duplicate callbacks.
 - Use a key-capture recorder rather than requiring users to type Tauri accelerator strings. Onboarding must use the same recorder and only advance after successful registration.
 - Voice commands must use a local allowlist of fixed actions or user-selected `.app` bundles; never execute free-form shell commands or spoken AppleScript.
 - Store only text and metadata in history. WPM must use microphone-recording duration only, not transcription, LLM, or paste latency.
+- Keep diagnostics opt-in/hidden, size-limited, and free of raw dictated text or full model output; offer local log deletion.
 
 # Git workflow after merged pull requests
 
 - Use a separate feature branch and pull request for every substantive change. Run local relevant checks before requesting merge, then observe the green GitHub CI run.
+- Before creating a PR, fetch the target branch and verify the feature branch is up to date, conflict-free, and contains no unrelated or generated artifacts.
 - After a pull request is merged, synchronise the local workspace to `origin/master` with a fast-forward-only pull.
 - Delete the corresponding local feature branch after the successful sync. Squash-merged branches may require `git branch -D <branch>` because their original commits are not in the merge graph.
 
@@ -89,12 +97,15 @@
 
 - Keep `.github/workflows/ci.yml` fast for pull requests and `master`: model preparation, frontend build, worker preparation, native main check, and whitespace check.
 - Keep full DMG bundling out of normal PR/master CI. Use manual-only `.github/workflows/release-build.yml` for the expensive signed user-DMG artifact.
+- Reuse the project npm lifecycle: `npm run build` for frontend-only checks; `npm run build:desktop` prepares the model and workers before a Tauri bundle; `npm run dmg:user` adds user-scoped DMG creation/signing.
 - Cache npm, Cargo artifacts, and the pinned Whisper Small model in GitHub Actions.
 
 # Validation before handoff
 
+- Run `npm test` after changing tested frontend behavior, especially global-shortcut lifecycle logic.
 - Run `npm run build` after frontend changes.
 - Run the relevant `cargo check` commands after Rust or worker changes.
 - Run `git diff --check` before handoff.
 - For packaging-related changes, build a release and verify `codesign --verify --deep --strict` on the app bundle plus the presence/executability of bundled workers.
+- For behavior involving global shortcuts, permissions, auto-paste, workers, or other macOS integrations, manually validate the installed app bundle when practical; development mode does not reproduce every permission and lifecycle condition.
 - The current DMG can be ad-hoc signed for local testing. Public macOS distribution additionally requires Developer ID signing and Apple notarization.
