@@ -89,6 +89,7 @@
 # Git workflow after merged pull requests
 
 - Use a separate feature branch and pull request for every substantive change. Run local relevant checks before requesting merge, then observe the green GitHub CI run.
+- Before creating a PR, fetch the target branch and verify the feature branch is up to date, conflict-free, and contains no unrelated or generated artifacts.
 - After a pull request is merged, synchronise the local workspace to `origin/master` with a fast-forward-only pull.
 - Delete the corresponding local feature branch after the successful sync. Squash-merged branches may require `git branch -D <branch>` because their original commits are not in the merge graph.
 
@@ -106,4 +107,5 @@
 - Run the relevant `cargo check` commands after Rust or worker changes.
 - Run `git diff --check` before handoff.
 - For packaging-related changes, build a release and verify `codesign --verify --deep --strict` on the app bundle plus the presence/executability of bundled workers.
+- For behavior involving global shortcuts, permissions, auto-paste, workers, or other macOS integrations, manually validate the installed app bundle when practical; development mode does not reproduce every permission and lifecycle condition.
 - The current DMG can be ad-hoc signed for local testing. Public macOS distribution additionally requires Developer ID signing and Apple notarization.
