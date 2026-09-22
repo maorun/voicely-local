@@ -28,6 +28,8 @@ struct TranscriptionRequest { wav_base64: String, language: Option<String> }
 struct EngineStatus { ready: bool, message: String }
 #[derive(Serialize)] #[serde(rename_all = "camelCase")]
 struct SystemStatus { whisper_ready: bool, whisper_worker_ready: bool, llm_worker_ready: bool, active_model_ready: bool, accessibility_granted: bool }
+#[derive(Clone, Serialize)]
+struct NativeShortcutEvent { shortcut: String, state: &'static str }
 #[derive(Serialize)] #[serde(rename_all = "camelCase")]
 struct TextModel { id: String, name: String, description: String, size_mb: u32, installed: bool, active: bool, installed_bytes: u64, partial_bytes: u64 }
 #[derive(Serialize, Clone)] #[serde(rename_all = "camelCase")]
@@ -522,18 +524,35 @@ fn frontmost_application_name() -> Option<String> {
 fn paste_into_active_app(app: AppHandle, restore_window: Option<bool>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        use core_graphics::{event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode}, event_source::{CGEventSource, CGEventSourceStateID}};
+
+        if !macos_accessibility_client::accessibility::application_is_trusted() {
+            return Err("Auto-Paste benötigt Bedienungshilfen. Aktiviere Voicely unter Systemeinstellungen > Datenschutz & Sicherheit > Bedienungshilfen und starte die App danach neu.".into());
+        }
+
         let window = app.get_webview_window("main").ok_or("App-Fenster wurde nicht gefunden.")?;
         let manual_paste = restore_window.unwrap_or(true);
         // Global dictation never focuses the main window, so automatic paste already
-        // targets the user's active app. Do not hide Voicely in that path: a hidden
-        // window makes the running app look like it crashed. Manual paste still hides
-        // briefly to hand focus back to the previous app, then restores the window.
-        if manual_paste { window.hide().map_err(|e| format!("Voicely konnte nicht ausgeblendet werden: {e}"))?; std::thread::sleep(std::time::Duration::from_millis(250)); }
-        let result = std::process::Command::new("osascript").args(["-e", r#"tell application "System Events" to keystroke "v" using command down"#]).output();
-        let result = result.map_err(|e| { if manual_paste { let _ = window.show(); } format!("Auto-Paste konnte nicht gestartet werden: {e}") })?;
-        if !result.status.success() { if manual_paste { let _ = window.show(); } return Err("Auto-Paste wurde von macOS blockiert. Aktiviere Voicely unter Systemeinstellungen > Datenschutz & Sicherheit > Bedienungshilfen.".into()); }
+        // targets the user's active app. Manual paste hands focus back first and then
+        // restores Voicely after the command-V event has been delivered.
+        if manual_paste {
+            window.hide().map_err(|e| format!("Voicely konnte nicht ausgeblendet werden: {e}"))?;
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        let result = (|| -> Result<(), String> {
+            let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| "macOS konnte keine Eingabequelle für Auto-Paste erstellen.")?;
+            let key_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true).map_err(|_| "macOS konnte das Auto-Paste-Ereignis nicht erstellen.")?;
+            let key_up = CGEvent::new_keyboard_event(source, KeyCode::ANSI_V, false).map_err(|_| "macOS konnte das Auto-Paste-Ereignis nicht erstellen.")?;
+            key_down.set_flags(CGEventFlags::CGEventFlagCommand);
+            key_up.set_flags(CGEventFlags::CGEventFlagCommand);
+            key_down.post(CGEventTapLocation::HID);
+            key_up.post(CGEventTapLocation::HID);
+            Ok(())
+        })();
+
         if manual_paste { let _ = window.show(); }
-        Ok(())
+        result
     }
     #[cfg(not(target_os = "macos"))]
     { let _ = app; Err("Auto-Paste ist derzeit nur für macOS verfügbar.".into()) }
@@ -568,7 +587,13 @@ pub fn run() {
             .title("Voicely Diktat").inner_size(370.0, 96.0).center().decorations(false)
             .always_on_top(true).skip_taskbar(true).resizable(false).visible(false).build()?;
         Ok(())
-    }).plugin(tauri_plugin_clipboard_manager::init()).plugin(tauri_plugin_global_shortcut::Builder::new().build()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+    }).plugin(tauri_plugin_clipboard_manager::init()).plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, shortcut, event| {
+        let state = match event.state {
+            tauri_plugin_global_shortcut::ShortcutState::Pressed => "Pressed",
+            tauri_plugin_global_shortcut::ShortcutState::Released => "Released",
+        };
+        let _ = app.emit("global-shortcut", NativeShortcutEvent { shortcut: shortcut.to_string(), state });
+    }).build()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
       .invoke_handler(tauri::generate_handler![initialize_local_engine, get_system_status, request_accessibility_permission, read_diagnostic_log, log_diagnostic, clear_diagnostic_log, list_text_models, download_text_model, cancel_text_model_download, delete_text_model, select_text_model, list_whisper_models, download_whisper_model, select_whisper_model, delete_whisper_model, rewrite_local, cancel_local_rewrite, warm_up_text_model, show_dictation_overlay, hide_dictation_overlay, execute_voice_command, frontmost_application_name, paste_into_active_app, transcribe_local])
       .run(tauri::generate_context!()).expect("Fehler beim Starten von Voicely Local");
 }

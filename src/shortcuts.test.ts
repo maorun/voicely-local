@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { replaceGlobalShortcut, type GlobalShortcutApi, type ShortcutHandler } from "./shortcuts";
+import { acceleratorFromKeyboardEvent, canonicalShortcut, replaceGlobalShortcut, ShortcutRegistration, type GlobalShortcutApi, type ShortcutHandler } from "./shortcuts";
 
 function createApi(initial: string[] = [], rejected: string[] = []) {
   const active = new Map<string, ShortcutHandler>();
@@ -43,5 +43,36 @@ describe("replaceGlobalShortcut", () => {
 
     expect(active.get(previous)).toBe(handler);
     expect(active.has(next)).toBe(false);
+  });
+
+  it("serialisiert StrictMode-Setup, Cleanup und erneutes Setup", async () => {
+    const shortcut = "CommandOrControl+Shift+Space";
+    const { active, api } = createApi();
+    const registration = new ShortcutRegistration(api);
+    const staleHandler = vi.fn();
+    const currentHandler = vi.fn();
+
+    const firstSetup = registration.set(shortcut, staleHandler);
+    const staleCleanup = registration.clear();
+    const currentSetup = registration.set(shortcut, currentHandler);
+    await Promise.all([firstSetup, staleCleanup, currentSetup]);
+
+    expect(active.get(shortcut)).toBe(currentHandler);
+    expect(registration.active).toBe(shortcut);
+    expect(api.register).toHaveBeenCalledTimes(2);
+    expect(api.unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it("unterscheidet Control und Command bei der Tastenerfassung", () => {
+    const key = { key: "d", code: "KeyD", altKey: false, shiftKey: true };
+    expect(acceleratorFromKeyboardEvent({ ...key, metaKey: false, ctrlKey: true })).toBe("Control+Shift+D");
+    expect(acceleratorFromKeyboardEvent({ ...key, metaKey: true, ctrlKey: false })).toBe("Command+Shift+D");
+    expect(acceleratorFromKeyboardEvent({ ...key, metaKey: true, ctrlKey: true })).toBe("Command+Control+Shift+D");
+  });
+
+  it("ordnet native macOS-Shortcut-Namen den gespeicherten Acceleratoren zu", () => {
+    expect(canonicalShortcut("CommandOrControl+Shift+D")).toBe(canonicalShortcut("shift+super+KeyD"));
+    expect(canonicalShortcut("CommandOrControl+Alt+S")).toBe(canonicalShortcut("alt+super+KeyS"));
+    expect(canonicalShortcut("CommandOrControl+Shift+D")).not.toBe(canonicalShortcut("alt+super+KeyS"));
   });
 });

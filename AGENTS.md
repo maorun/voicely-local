@@ -53,9 +53,11 @@
 - The LLM worker is persistent for a 5-minute idle period, accepts one generation at a time, uses request IDs for streaming/cancellation, and must have bounded request timeouts plus cleanup.
 - On macOS, terminate llama.cpp/ggml Metal workers without normal C++ teardown if it crashes in Metal residency-set destructors; ensure process-exit handling cannot take down or make the main app appear to crash.
 - Qwen3 prompts must disable reasoning (`/no_think` and a closed empty `<think>` block), otherwise hidden reasoning makes short writing actions appear slow.
-- Worker binaries must be built for the target architecture and bundled as resources. Any release packaging change must verify that the workers are executable inside `.app`.
-- macOS auto-paste requires Accessibility permission. Do not present it as available unless the local system-status check confirms permission.
+- Worker binaries must be built for the target architecture and bundled as resources. Any release packaging change must verify that the workers are executable inside `.app`. `prepare:workers` must explicitly `chmod +x` outputs after copying: pre-creating destination files and then copying over them can otherwise preserve non-executable modes.
+- macOS auto-paste requires Accessibility permission. Do not present it as available unless the local system-status check confirms permission. Send Command-V through native Quartz/CGEvent APIs rather than AppleScript `System Events`, which introduces a separate Automation permission and misleading failure mode.
 - Request Accessibility only after an explicit user action; passive checks must not trigger macOS dialogs. For automatic paste, keep the main app visible/in the background so it does not look like a crash; restore it on paste failure.
+- Accessibility/TCC permissions follow the app's code-signing designated requirement, not just its bundle identifier. Ad-hoc signatures change identity across binary updates and require reauthorization. Local update testing should use one persistent local signing identity; release distribution should use Developer ID. Never overwrite an existing persistent signature with a final unconditional `codesign --sign -` step.
+- An installer must terminate the currently running app before moving/replacing its bundle, wait for process exit, then launch the newly installed bundle. Otherwise the old executable can continue from a backup path and make a successful install appear broken.
 - Position the dictation overlay from the focused-window bounds only as best effort. Always show it on-screen first and fall back to screen center for missing/invalid multi-monitor coordinates.
 - Use `tauri-plugin-autostart` with the macOS `LaunchAgent` backend only behind the explicit per-user login-start preference.
 - The macOS deployment target is 11.0. Preserve this when changing native build configuration.
@@ -80,8 +82,9 @@
 - Any action that replaces editor text should preserve the original text until local streaming completes, so cancellation/error recovery can restore it.
 - Keep dictation and voice-command shortcuts independently registered. Never use `unregisterAll()` while changing one shortcut, because it silently disables the other.
 - Apply a saved shortcut immediately: atomically unregister the actually active old shortcut, register the new one, and restore the old registration if the new accelerator is unavailable. Track the active registration separately from persisted settings so cleanup never targets stale state.
-- Treat global-shortcut registration as an asynchronous owned resource. React `StrictMode` can overlap effect setup/cleanup in development; serialize or generation-guard registration so stale cleanup cannot unregister a newer handler and concurrent setup cannot create duplicate callbacks.
-- Use a key-capture recorder rather than requiring users to type Tauri accelerator strings. Onboarding must use the same recorder and only advance after successful registration.
+- Treat global-shortcut registration as an asynchronous owned resource. React `StrictMode` can overlap effect setup/cleanup in development; serialize registration, replacement, and cleanup through one owner so stale cleanup cannot unregister a newer handler and concurrent setup cannot create duplicate callbacks.
+- Keep shortcut event delivery long-lived. Prefer one native `tauri-plugin-global-shortcut` handler that emits typed app events over transient per-registration WebView callback channels; normalize native and persisted accelerator forms before routing recording vs. command actions.
+- Use a key-capture recorder rather than requiring users to type Tauri accelerator strings. Onboarding must use the same recorder and only advance after successful registration. On macOS, `CommandOrControl` resolves to Command, not either key; preserve physical `metaKey` as `Command` and `ctrlKey` as `Control`, including when both are pressed.
 - Voice commands must use a local allowlist of fixed actions or user-selected `.app` bundles; never execute free-form shell commands or spoken AppleScript.
 - Store only text and metadata in history. WPM must use microphone-recording duration only, not transcription, LLM, or paste latency.
 - Keep diagnostics opt-in/hidden, size-limited, and free of raw dictated text or full model output; offer local log deletion.
@@ -89,6 +92,7 @@
 # Git workflow after merged pull requests
 
 - Use a separate feature branch and pull request for every substantive change. Run local relevant checks before requesting merge, then observe the green GitHub CI run.
+- After a session resume, interruption, or workspace handoff, re-check `pwd`, session workspace metadata, `git worktree list`, current branch, and status before reading, building, or editing. A resumed session can point at the repository root while the actual changes remain in a managed feature worktree; never continue implementation on `master` by assumption.
 - Before creating a PR, fetch the target branch and verify the feature branch is up to date, conflict-free, and contains no unrelated or generated artifacts.
 - After a pull request is merged, synchronise the local workspace to `origin/master` with a fast-forward-only pull.
 - Delete the corresponding local feature branch after the successful sync. Squash-merged branches may require `git branch -D <branch>` because their original commits are not in the merge graph.
@@ -98,6 +102,7 @@
 - Keep `.github/workflows/ci.yml` fast for pull requests and `master`: model preparation, frontend build, worker preparation, native main check, and whitespace check.
 - Keep full DMG bundling out of normal PR/master CI. Use manual-only `.github/workflows/release-build.yml` for the expensive signed user-DMG artifact.
 - Reuse the project npm lifecycle: `npm run build` for frontend-only checks; `npm run build:desktop` prepares the model and workers before a Tauri bundle; `npm run dmg:user` adds user-scoped DMG creation/signing.
+- Bump the app version for each shipped change and keep `package.json`, root `package-lock.json`, `src-tauri/Cargo.toml`, the app entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json` synchronized. The UI must display the installed bundle version via Tauri's `getVersion()`, and packaging scripts should derive artifact names from the built bundle rather than hard-coding a version.
 - Cache npm, Cargo artifacts, and the pinned Whisper Small model in GitHub Actions.
 
 # Validation before handoff
@@ -106,6 +111,6 @@
 - Run `npm run build` after frontend changes.
 - Run the relevant `cargo check` commands after Rust or worker changes.
 - Run `git diff --check` before handoff.
-- For packaging-related changes, build a release and verify `codesign --verify --deep --strict` on the app bundle plus the presence/executability of bundled workers.
-- For behavior involving global shortcuts, permissions, auto-paste, workers, or other macOS integrations, manually validate the installed app bundle when practical; development mode does not reproduce every permission and lifecycle condition.
-- The current DMG can be ad-hoc signed for local testing. Public macOS distribution additionally requires Developer ID signing and Apple notarization.
+- For packaging-related changes, build a release and verify `codesign --verify --deep --strict` on the app bundle, the expected `CFBundleShortVersionString`, DMG checksum/name, target architecture, and presence/executability of bundled workers.
+- For behavior involving global shortcuts, permissions, auto-paste, workers, or other macOS integrations, manually validate the installed app bundle when practical; development mode does not reproduce every permission and lifecycle condition. Confirm the running executable comes from the current `~/Applications` bundle, not a moved backup, and compare built/installed hashes when provenance is unclear.
+- Ad-hoc signing is acceptable only for disposable local tests and forces Accessibility reauthorization after binary updates. Prefer a persistent local signing identity for iterative local installs; public macOS distribution additionally requires Developer ID signing and Apple notarization.
