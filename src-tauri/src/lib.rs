@@ -86,6 +86,12 @@ fn verify_model_file(path: &std::path::Path, expected: &str) -> Result<bool, Str
     let actual = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     Ok(actual == expected)
 }
+fn verify_model_file_once(path: &std::path::Path, expected: &str) -> Result<bool, String> {
+    if has_verification_marker(path, expected) { return Ok(true); }
+    if !verify_model_file(path, expected)? { return Ok(false); }
+    write_verification_marker(path, expected)?;
+    Ok(true)
+}
 fn model_is_installed(directory: &std::path::Path, model: &ModelSpec) -> bool { fs::metadata(directory.join(model.file)).map(|meta| meta.len() >= model.min_bytes).unwrap_or(false) }
 fn active_model_id(app: &AppHandle) -> Option<String> { fs::read_to_string(app.path().app_local_data_dir().ok()?.join(ACTIVE_MODEL_FILE)).ok().map(|value| value.trim().to_string()) }
 fn model_list(app: &AppHandle) -> Result<Vec<TextModel>, String> {
@@ -125,16 +131,39 @@ fn whisper_model_list(app: &AppHandle) -> Result<Vec<TextModel>, String> {
         TextModel { id: model.id.into(), name: model.name.into(), description: model.description.into(), size_mb: model.size_mb, installed: installed_bytes >= model.min_bytes, active: active == model.id, installed_bytes, partial_bytes }
     }).collect())
 }
+fn wifi_devices(hardware_ports: &str) -> Vec<String> {
+    let mut is_wifi = false;
+    let mut devices = Vec::new();
+    for line in hardware_ports.lines() {
+        let line = line.trim();
+        if let Some(port) = line.strip_prefix("Hardware Port:") {
+            is_wifi = matches!(port.trim(), "Wi-Fi" | "AirPort");
+        } else if is_wifi {
+            if let Some(device) = line.strip_prefix("Device:") { devices.push(device.trim().to_string()); is_wifi = false; }
+        }
+    }
+    devices
+}
+fn active_network_interface(status: &str) -> bool {
+    status.lines().any(|line| line.trim() == "status: active") && status.lines().any(|line| line.trim_start().starts_with("inet "))
+}
 fn on_wifi() -> bool {
     #[cfg(target_os = "macos")]
     {
-        let route = match Command::new("/sbin/route").args(["-n", "get", "default"]).output() { Ok(output) => output, Err(_) => return false };
-        let device = match String::from_utf8_lossy(&route.stdout).lines().find_map(|line| line.trim().strip_prefix("interface:").map(|value| value.trim().to_string())) { Some(device) => device, None => return false };
-        let order = match Command::new("/usr/sbin/networksetup").arg("-listnetworkserviceorder").output() { Ok(output) => output, Err(_) => return false };
-        String::from_utf8_lossy(&order.stdout).lines().filter(|line| line.contains(&format!("Device: {device})"))).any(|line| line.contains("Wi-Fi") || line.contains("AirPort"))
+        let ports = match Command::new("/usr/sbin/networksetup").arg("-listallhardwareports").output() { Ok(output) => output, Err(_) => return false };
+        wifi_devices(&String::from_utf8_lossy(&ports.stdout)).iter().any(|device| {
+            Command::new("/sbin/ifconfig").arg(device).output().map(|output| {
+                active_network_interface(&String::from_utf8_lossy(&output.stdout))
+            }).unwrap_or(false)
+        })
     }
     #[cfg(not(target_os = "macos"))]
     { true }
+}
+fn finalize_downloaded_model(temporary: &std::path::Path, target: &std::path::Path, expected: &str) -> Result<(), String> {
+    if !verify_model_file(temporary, expected)? { let _ = fs::remove_file(temporary); return Err("Die Prüfsumme des Modells stimmt nicht. Die fehlerhafte Datei wurde entfernt.".into()); }
+    fs::rename(temporary, target).map_err(|e| format!("Modell konnte nicht aktiviert werden: {e}"))?;
+    write_verification_marker(target, expected)
 }
 fn download_model_file(app: &AppHandle, downloads: &DownloadState, model: &ModelSpec, directory: &std::path::Path, wifi_only: bool) -> Result<(), String> {
     if is_bundled(model) { return Ok(()); }
@@ -142,7 +171,7 @@ fn download_model_file(app: &AppHandle, downloads: &DownloadState, model: &Model
     downloads.0.lock().map_err(|_| "Downloadstatus konnte nicht gesperrt werden.")?.remove(&model_id);
     if fs::metadata(&target).map(|meta| meta.len() >= model.min_bytes).unwrap_or(false) { return Ok(()); }
     let existing = fs::metadata(&temporary).map(|meta| meta.len()).unwrap_or(0);
-    if existing >= model.min_bytes { fs::rename(&temporary, &target).map_err(|e| e.to_string())?; return Ok(()); }
+    if existing >= model.min_bytes { return finalize_downloaded_model(&temporary, &target, model.sha256); }
     if wifi_only && !on_wifi() { return Err("Große Modelldownloads sind auf WLAN beschränkt. Verbinde dich mit einem WLAN oder deaktiviere die Einstellung.".into()); }
     let client = reqwest::blocking::Client::new(); let mut request = client.get(model.url);
     if existing > 0 { request = request.header(reqwest::header::RANGE, format!("bytes={existing}-")); }
@@ -161,8 +190,7 @@ fn download_model_file(app: &AppHandle, downloads: &DownloadState, model: &Model
     }
     app.emit("model-download-progress", DownloadProgress { model_id: model_id.clone(), downloaded_bytes: downloaded, total_bytes: total }).map_err(|e| e.to_string())?;
     if downloaded < model.min_bytes { return Err("Der Modelldownload ist unvollständig. Du kannst ihn später fortsetzen.".into()); }
-    if !verify_model_file(&temporary, model.sha256)? { let _ = fs::remove_file(&temporary); return Err("Die Prüfsumme des Modells stimmt nicht. Die fehlerhafte Datei wurde entfernt.".into()); }
-    fs::rename(&temporary, &target).map_err(|e| format!("Modell konnte nicht aktiviert werden: {e}"))?; write_verification_marker(&target, model.sha256)?; Ok(())
+    finalize_downloaded_model(&temporary, &target, model.sha256)
 }
 fn active_text_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     let id = active_model_id(app).ok_or("Bitte wähle zuerst ein lokales Schreibmodell.")?;
@@ -387,7 +415,8 @@ fn select_whisper_model_internal(app: AppHandle, model_id: String) -> Result<Vec
     if is_bundled(model) { bundled_model_path(&app)?; } else {
         let directory = whisper_models_dir(&app)?;
         if !whisper_file_installed(&directory, model) { return Err("Dieses Transkriptionsmodell muss zuerst vollständig heruntergeladen werden.".into()); }
-        if !verify_model_file(&directory.join(model.file), model.sha256)? { return Err("Die Prüfsumme dieses Transkriptionsmodells stimmt nicht. Bitte lösche und lade es erneut herunter.".into()); }
+        let path = directory.join(model.file);
+        if !verify_model_file_once(&path, model.sha256)? { return Err("Die Prüfsumme dieses Transkriptionsmodells stimmt nicht. Bitte lösche und lade es erneut herunter.".into()); }
     }
     fs::write(app.path().app_local_data_dir().map_err(|e| e.to_string())?.join(ACTIVE_WHISPER_FILE), model.id).map_err(|e| format!("Transkriptionsauswahl konnte nicht gespeichert werden: {e}"))?;
     whisper_model_list(&app)
@@ -404,7 +433,7 @@ fn delete_whisper_model(app: AppHandle, downloads: State<DownloadState>, model_i
     if active_whisper_id(&app) == model.id { return Err("Das aktive Transkriptionsmodell kann nicht gelöscht werden. Wähle zuerst ein anderes Profil.".into()); }
     if downloads.0.lock().map_err(|_| "Downloadstatus konnte nicht gesperrt werden.")?.contains(model.id) { return Err("Ein laufender Download kann nicht gelöscht werden. Brich ihn zuerst ab.".into()); }
     let directory = whisper_models_dir(&app)?; let target = directory.join(model.file);
-    let _ = fs::remove_file(&target); let _ = fs::remove_file(part_path(&target)); whisper_model_list(&app)
+    let _ = fs::remove_file(&target); let _ = fs::remove_file(part_path(&target)); let _ = fs::remove_file(verification_marker_path(&target)); whisper_model_list(&app)
 }
 #[tauri::command]
 fn cancel_text_model_download(downloads: State<DownloadState>, model_id: String) -> Result<(), String> { downloads.0.lock().map_err(|_| "Downloadstatus konnte nicht gesperrt werden.")?.insert(model_id); Ok(()) }
@@ -596,4 +625,60 @@ pub fn run() {
     }).build()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
       .invoke_handler(tauri::generate_handler![initialize_local_engine, get_system_status, request_accessibility_permission, read_diagnostic_log, log_diagnostic, clear_diagnostic_log, list_text_models, download_text_model, cancel_text_model_download, delete_text_model, select_text_model, list_whisper_models, download_whisper_model, select_whisper_model, delete_whisper_model, rewrite_local, cancel_local_rewrite, warm_up_text_model, show_dictation_overlay, hide_dictation_overlay, execute_voice_command, frontmost_application_name, paste_into_active_app, transcribe_local])
       .run(tauri::generate_context!()).expect("Fehler beim Starten von Voicely Local");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wifi_hardware_ports_are_parsed_independently_of_default_route() {
+        let ports = "Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 00:00:00:00:00:00\n\nHardware Port: Thunderbolt Ethernet\nDevice: en5";
+        assert_eq!(wifi_devices(ports), vec!["en0"]);
+        assert!(wifi_devices("Hardware Port: Ethernet\nDevice: en0").is_empty());
+        assert!(active_network_interface("inet 192.168.2.177 netmask 0xffffff00\nstatus: active"));
+        assert!(!active_network_interface("status: inactive"));
+        assert!(!active_network_interface("status: active"));
+    }
+
+    #[test]
+    fn verification_marker_is_created_and_size_bound() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("test clock").as_nanos();
+        let directory = std::env::temp_dir().join(format!("voicely-verification-{unique}"));
+        let path = directory.join("model.bin");
+        fs::create_dir_all(&directory).expect("create test directory");
+        fs::write(&path, b"abc").expect("write test model");
+        let checksum = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        assert!(verify_model_file_once(&path, checksum).expect("verify model"));
+        assert!(has_verification_marker(&path, checksum));
+        assert!(verify_model_file_once(&path, checksum).expect("reuse marker"));
+
+        fs::write(&path, b"abcd").expect("resize test model");
+        assert!(!has_verification_marker(&path, checksum));
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn downloaded_model_is_verified_before_finalization() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("test clock").as_nanos();
+        let directory = std::env::temp_dir().join(format!("voicely-download-{unique}"));
+        let temporary = directory.join("model.bin.part");
+        let target = directory.join("model.bin");
+        fs::create_dir_all(&directory).expect("create test directory");
+        fs::write(&temporary, b"abc").expect("write valid partial model");
+        let checksum = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        finalize_downloaded_model(&temporary, &target, checksum).expect("finalize valid model");
+        assert!(target.is_file());
+        assert!(has_verification_marker(&target, checksum));
+
+        let invalid_temporary = directory.join("invalid.bin.part");
+        let invalid_target = directory.join("invalid.bin");
+        fs::write(&invalid_temporary, b"invalid").expect("write invalid partial model");
+        assert!(finalize_downloaded_model(&invalid_temporary, &invalid_target, checksum).is_err());
+        assert!(!invalid_temporary.exists());
+        assert!(!invalid_target.exists());
+        fs::remove_dir_all(&directory).expect("remove test directory");
+    }
 }
