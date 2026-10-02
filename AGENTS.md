@@ -72,6 +72,7 @@
 - Do not commit bundled model blobs. Keep `ggml-small.bin` ignored and obtain it through `npm run prepare:models`; package it only into release artifacts.
 - If the bundle identifier changes, migrate legacy local model directories and active-model markers idempotently. A newly created but empty target directory must not prevent migration; never overwrite a non-empty target store.
 - Do not silently download multi-gigabyte models. Always require a user action and show the local size/progress.
+- When Wi-Fi-only downloads are enabled on macOS, determine eligibility from an active physical Wi-Fi/AirPort interface with an IPv4 address, not from the default route. A VPN commonly makes a `utun` interface the default route while Wi-Fi remains active; if no qualifying Wi-Fi interface exists, reject the download and surface a visible error.
 
 # Frontend conventions
 
@@ -96,12 +97,13 @@
 - Before creating a PR, fetch the target branch and verify the feature branch is up to date, conflict-free, and contains no unrelated or generated artifacts.
 - After a pull request is merged, synchronise the local workspace to `origin/master` with a fast-forward-only pull.
 - Delete the corresponding local feature branch after the successful sync. Squash-merged branches may require `git branch -D <branch>` because their original commits are not in the merge graph.
+- Before removing a feature worktree, check whether the user still needs ignored build outputs such as `.app` or `.dmg` bundles. Worktree removal deletes those outputs; after the merged source has been synchronized to the durable root, rebuild any still-needed local installer there with `npm run dmg:user` before cleanup.
 
 # CI conventions
 
 - Keep `.github/workflows/ci.yml` fast for pull requests and `master`: model preparation, frontend build, worker preparation, native main check, and whitespace check.
 - Keep full DMG bundling out of normal PR/master CI. Use manual-only `.github/workflows/release-build.yml` for the expensive signed user-DMG artifact.
-- Reuse the project npm lifecycle: `npm run build` for frontend-only checks; `npm run build:desktop` prepares the model and workers before a Tauri bundle; `npm run dmg:user` adds user-scoped DMG creation/signing.
+- Reuse the project npm lifecycle: `npm run build` for frontend-only checks; `npm run build:desktop` prepares the model and workers plus intermediate Tauri bundles; `npm run dmg:user` runs the project signing step and creates the user-install DMG with the installer for `~/Applications`. Use that DMG, not an intermediate Tauri bundle, for local installation handoffs.
 - Bump the app version for each shipped change and keep `package.json`, root `package-lock.json`, `src-tauri/Cargo.toml`, the app entry in `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json` synchronized. The UI must display the installed bundle version via Tauri's `getVersion()`, and packaging scripts should derive artifact names from the built bundle rather than hard-coding a version.
 - Cache npm, Cargo artifacts, and the pinned Whisper Small model in GitHub Actions.
 
