@@ -500,7 +500,8 @@ fn active_window_overlay_position() -> Option<(f64, f64)> {
     { None }
 }
 
-#[tauri::command(async)]
+// Keep show/hide synchronous so they apply in call order; only the slow osascript lookup runs off the main thread.
+#[tauri::command]
 fn show_dictation_overlay(app: AppHandle) -> Result<(), String> {
     let overlay = app.get_webview_window("dictation").ok_or("Diktat-Leiste wurde nicht initialisiert.")?;
     // The overlay must always become visible, even when Voicely's main window is
@@ -508,9 +509,11 @@ fn show_dictation_overlay(app: AppHandle) -> Result<(), String> {
     // location, then move to the focused window only if its coordinates are sane.
     let _ = overlay.center();
     overlay.show().map_err(|e| format!("Diktat-Leiste konnte nicht eingeblendet werden: {e}"))?;
-    if let Some((x, y)) = active_window_overlay_position().filter(|(x, y)| x.is_finite() && y.is_finite() && *x > -10_000.0 && *x < 10_000.0 && *y > -10_000.0 && *y < 10_000.0) {
-        if overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y))).is_err() { let _ = overlay.center(); }
-    }
+    thread::spawn(move || {
+        if let Some((x, y)) = active_window_overlay_position().filter(|(x, y)| x.is_finite() && y.is_finite() && *x > -10_000.0 && *x < 10_000.0 && *y > -10_000.0 && *y < 10_000.0) {
+            if overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y))).is_err() { let _ = overlay.center(); }
+        }
+    });
     Ok(())
 }
 #[tauri::command]
