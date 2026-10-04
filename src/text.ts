@@ -2,9 +2,10 @@ export type Tone = "neutral" | "professional" | "casual";
 export type ProcessingLevel = "light" | "standard" | "strong";
 
 const fillerWords = ["äh", "ähm", "eh", "hm", "mhm", "äh also", "also äh", "sozusagen", "quasi", "im prinzip", "eigentlich", "halt", "you know", "um", "uh"];
+// Spoken punctuation must be a whole word, otherwise words such as "Kommando" or "Punktzahl" are split.
 const spokenPunctuation: Array<[RegExp, string]> = [
-  [/\s+komma\s*/gi, ", "], [/\s+punkt\s*/gi, ". "], [/\s+doppelpunkt\s*/gi, ": "],
-  [/\s+ausrufezeichen\s*/gi, "! "], [/\s+fragezeichen\s*/gi, "? "], [/\s+neue zeile\s*/gi, "\n"],
+  [/\s+komma(?![\p{L}\p{N}])\s*/giu, ", "], [/\s+punkt(?![\p{L}\p{N}])\s*/giu, ". "], [/\s+doppelpunkt(?![\p{L}\p{N}])\s*/giu, ": "],
+  [/\s+ausrufezeichen(?![\p{L}\p{N}])\s*/giu, "! "], [/\s+fragezeichen(?![\p{L}\p{N}])\s*/giu, "? "], [/\s+neue zeile(?![\p{L}\p{N}])\s*/giu, "\n"],
 ];
 
 /** Applies only deterministic, on-device transformations; it never calls a model or service. */
@@ -45,7 +46,7 @@ function removeFillers(text: string, level: ProcessingLevel) {
 }
 
 function removeDirectRepetitions(text: string) {
-  return text.replace(/\b([\p{L}][\p{L}'-]*)\s+\1\b/giu, "$1");
+  return text.replace(/(?<![\p{L}\p{N}'-])([\p{L}][\p{L}'-]*)\s+\1(?![\p{L}\p{N}'-])/giu, "$1");
 }
 
 // Handles only the unambiguous spoken pattern "… nein, <replacement>" without guessing intent.
@@ -57,7 +58,8 @@ function applyDictionary(text: string, dictionary: string) {
   return dictionary.split("\n").reduce((result, line) => {
     const [spoken, written, ...extra] = line.split("=>").map((part) => part.trim());
     if (!spoken || !written || extra.length) return result;
-    return result.replace(new RegExp(`\\b${escapeRegExp(spoken)}\\b`, "giu"), written);
+    // `\b` is ASCII-only in JavaScript, so it never matches next to umlauts; use Unicode-aware boundaries.
+    return result.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(spoken)}(?![\\p{L}\\p{N}_])`, "giu"), () => written);
   }, text);
 }
 
@@ -66,7 +68,7 @@ function formatEnumerations(text: string) {
 }
 
 function normalizeSpacing(text: string) {
-  return text.replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/[ \t]+([,.;:!?])/g, "$1").replace(/([,.;:!?])(?=[^\s\n])/g, "$1 ").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  return text.replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/[ \t]+([,.;:!?])/g, "$1").replace(/([,.;:!?])(?=\S)/g, (mark, _punctuation, offset: number, value: string) => (/\d/.test(value[offset - 1] ?? "") && /\d/.test(value[offset + 1])) || /[,.;:!?)\]"'»“”]/.test(value[offset + 1]) ? mark : `${mark} `).replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function finishSentences(text: string) {

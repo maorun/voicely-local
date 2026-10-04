@@ -1,5 +1,6 @@
 import { emit, listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { disposeWhenUnmounted } from "./events";
 
 type LevelEvent = { level: number };
 const thresholds = [0.05, 0.12, 0.2, 0.3, 0.42, 0.55, 0.7, 0.84];
@@ -8,9 +9,8 @@ export default function DictationOverlay() {
   const [level, setLevel] = useState(0);
   useEffect(() => {
     document.body.classList.add("overlay-body");
-    let unlisten: (() => void) | undefined;
-    void listen<LevelEvent>("dictation-level", (event) => setLevel(Math.max(0, Math.min(1, event.payload.level)))).then((dispose) => { unlisten = dispose; });
-    return () => { document.body.classList.remove("overlay-body"); unlisten?.(); };
+    const unlisten = disposeWhenUnmounted(listen<LevelEvent>("dictation-level", (event) => setLevel(Math.max(0, Math.min(1, event.payload.level)))));
+    return () => { document.body.classList.remove("overlay-body"); unlisten(); };
   }, []);
 
   return <div className="dictation-overlay" aria-live="polite">
