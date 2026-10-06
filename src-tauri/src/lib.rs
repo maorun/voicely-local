@@ -327,6 +327,12 @@ fn strip_thinking(output: &str) -> String {
     }
     text.trim().to_string()
 }
+fn terminate_worker(workers: &LlmWorkerState, handle: &Arc<LlmWorkerHandle>) {
+    if let Ok(mut child) = handle.child.lock() { let _ = child.kill(); let _ = child.wait(); }
+    if let Ok(mut active) = workers.active.lock() {
+        if active.as_ref().map(|current| Arc::ptr_eq(current, handle)).unwrap_or(false) { *active = None; }
+    }
+}
 fn generate_local(app: &AppHandle, workers: &LlmWorkerState, request_id: &str, model_path: PathBuf, prompt: &str) -> Result<String, String> {
     let handle = spawn_worker(app, workers, model_path)?;
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -343,8 +349,17 @@ fn generate_local(app: &AppHandle, workers: &LlmWorkerState, request_id: &str, m
             Ok(WorkerEvent::Error(message)) => break Err(message),
             Ok(WorkerEvent::Cancelled) => break Err("Die lokale Umformulierung wurde abgebrochen.".into()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Stop the generation in the worker too; otherwise it keeps running and rejects the next request as busy.
+                // Keep the worker unavailable until cancellation has completed, or replace it if decode remains stuck.
                 if let Ok(mut stdin) = handle.stdin.lock() { let _ = writeln!(stdin, "{}", serde_json::json!({ "type": "cancel", "id": request_id })); }
+                let cancellation_deadline = Instant::now() + Duration::from_secs(5);
+                let cancelled = loop {
+                    match receiver.recv_timeout(cancellation_deadline.saturating_duration_since(Instant::now())) {
+                        Ok(WorkerEvent::Token(_)) => continue,
+                        Ok(WorkerEvent::Done | WorkerEvent::Error(_) | WorkerEvent::Cancelled) => break true,
+                        Err(_) => break false,
+                    }
+                };
+                if !cancelled { terminate_worker(workers, &handle); }
                 break Err("Die lokale Textaktion hat nach 90 Sekunden keine Antwort geliefert und wurde beendet.".into())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err("Verbindung zum lokalen Schreib-Worker wurde unterbrochen.".into()),
@@ -608,10 +623,25 @@ fn paste_into_active_app(app: AppHandle, restore_window: Option<bool>) -> Result
 fn transcribe_local(app: AppHandle, request: TranscriptionRequest) -> Result<String, String> {
     let audio = STANDARD.decode(request.wav_base64).map_err(|_| "Ungültige Audiodaten")?;
     let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?; fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let input = cache.join(format!("dictation-{}.wav", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis()));
-    fs::write(&input, audio).map_err(|e| format!("Audio konnte nicht an Whisper übergeben werden: {e}"))?;
-    let result = std::process::Command::new(whisper_worker_path(&app)?).args([active_whisper_model_path(&app)?.to_str().ok_or("Ungültiger Modellpfad")?, input.to_str().ok_or("Ungültiger Audiopfad")?, request.language.as_deref().unwrap_or("auto")]).output().map_err(|e| format!("Integrierter Whisper-Worker konnte nicht gestartet werden: {e}"))?;
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+    let (input, mut file) = (0_u64..).find_map(|attempt| {
+        let path = cache.join(format!("dictation-{timestamp}-{attempt}.wav"));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => Some(Ok((path, file))),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+            Err(error) => Some(Err(error)),
+        }
+    }).ok_or_else(|| "Kein eindeutiger Audiopfad konnte angelegt werden.".to_string())?.map_err(|e| format!("Audio konnte nicht an Whisper übergeben werden: {e}"))?;
+    if let Err(error) = file.write_all(&audio) { let _ = fs::remove_file(&input); return Err(format!("Audio konnte nicht an Whisper übergeben werden: {error}")); }
+    drop(file);
+    let transcription = (|| {
+        std::process::Command::new(whisper_worker_path(&app)?)
+            .args([active_whisper_model_path(&app)?.to_str().ok_or("Ungültiger Modellpfad")?, input.to_str().ok_or("Ungültiger Audiopfad")?, request.language.as_deref().unwrap_or("auto")])
+            .output()
+            .map_err(|e| format!("Integrierter Whisper-Worker konnte nicht gestartet werden: {e}"))
+    })();
     let _ = fs::remove_file(&input);
+    let result = transcription?;
     if !result.status.success() { return Err(String::from_utf8_lossy(&result.stderr).trim().to_string()); }
     let text = String::from_utf8(result.stdout).map_err(|_| "Whisper lieferte ungültigen Text.")?;
     if text.trim().is_empty() { return Err("Whisper hat keinen Text erkannt.".into()); } Ok(text.trim().into())

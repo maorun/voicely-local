@@ -21,5 +21,7 @@ describe("polishTranscript", () => {
   it("removes only whole-word direct repetitions", () => {
     expect(polishTranscript("ich ich gehe", "neutral", "light", "")).toBe("Ich gehe.");
     expect(polishTranscript("Kühe he", "neutral", "light", "")).toBe("Kühe he.");
+    expect(polishTranscript("foo_bar bar", "neutral", "light", "")).toBe("Foo_bar bar.");
+    expect(polishTranscript("foo_bar bar_baz", "neutral", "light", "")).toBe("Foo_bar bar_baz.");
   });
 });

@@ -46,7 +46,7 @@ function removeFillers(text: string, level: ProcessingLevel) {
 }
 
 function removeDirectRepetitions(text: string) {
-  return text.replace(/(?<![\p{L}\p{N}'-])([\p{L}][\p{L}'-]*)\s+\1(?![\p{L}\p{N}'-])/giu, "$1");
+  return text.replace(/(?<![\p{L}\p{N}_'-])([\p{L}][\p{L}'-]*)\s+\1(?![\p{L}\p{N}_'-])/giu, "$1");
 }
 
 // Handles only the unambiguous spoken pattern "… nein, <replacement>" without guessing intent.
