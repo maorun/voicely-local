@@ -11,6 +11,7 @@ import Onboarding from "./Onboarding";
 import VoiceCommandsSettings from "./VoiceCommandsSettings";
 import { acceleratorFromKeyboardEvent, canonicalShortcut, ShortcutRegistration, type GlobalShortcutApi, type ShortcutState } from "./shortcuts";
 import { addHistoryEntry, clearHistory, loadHistory, removeHistoryEntry, type DictationEntry } from "./history";
+import { disposeWhenUnmounted } from "./events";
 import { whisperActionPresentation, type WhisperAction } from "./whisperModels";
 
 type RecordingMode = "toggle" | "pushToTalk";
@@ -44,7 +45,7 @@ export default function App() {
   const [modelWarming, setModelWarming] = useState(false); const [capturingShortcut, setCapturingShortcut] = useState(false); const [commandDraft, setCommandDraft] = useState({ phrase: "", appPath: "" }); const [shortcutMessage, setShortcutMessage] = useState(""); const activationTimeoutRef = useRef<number | null>(null); const [shortcutDraft, setShortcutDraft] = useState(settings.shortcut); const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]); const [onboarding, setOnboarding] = useState(() => localStorage.getItem("voicely-onboarding-completed") !== "true"); const [microphonePermission, setMicrophonePermission] = useState<PermissionState | "unsupported">("prompt");
   const [commandShortcut, setCommandShortcut] = useState(false); const [recordingCommand, setRecordingCommand] = useState(false); const [capturingCommandShortcut, setCapturingCommandShortcut] = useState(false); const [commandShortcutDraft, setCommandShortcutDraft] = useState(settings.commandShortcut); const [commandShortcutMessage, setCommandShortcutMessage] = useState(""); const [commandEditIndex, setCommandEditIndex] = useState<number | null>(null); const [commandEditDraft, setCommandEditDraft] = useState({ phrase: "", appPath: "" });
   const [appVersion, setAppVersion] = useState("");
-  const recordingStartedAtRef = useRef<number | null>(null); const generatedWordsRef = useRef(0); const stopRef = useRef<Recording | null>(null); const silenceStartedAtRef = useRef<number | null>(null); const autoStoppingRef = useRef(false); const pushHeldRef = useRef(false); const commandPushHeldRef = useRef(false); const rewriteRequestRef = useRef<string | null>(null); const cancelRef = useRef<() => void>(() => undefined); const shortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined); const commandShortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
+  const recordingKindRef = useRef<"dictation" | "command" | null>(null); const pendingStopRef = useRef<"dictation" | "command" | null>(null); const generatedWordsRef = useRef(0); const stopRef = useRef<Recording | null>(null); const silenceStartedAtRef = useRef<number | null>(null); const autoStoppingRef = useRef(false); const pushHeldRef = useRef(false); const commandPushHeldRef = useRef(false); const rewriteRequestRef = useRef<string | null>(null); const cancelRef = useRef<() => void>(() => undefined); const shortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined); const commandShortcutActionRef = useRef<(state: "Pressed" | "Released") => void>(() => undefined);
   useEffect(() => { void getVersion().then(setAppVersion).catch(() => setAppVersion("unbekannt")); }, []);
   useEffect(() => localStorage.setItem("voicely-settings", JSON.stringify(settings)), [settings]);
   useEffect(() => { if (!navigator.permissions) { setMicrophonePermission("unsupported"); return; } void navigator.permissions.query({ name: "microphone" as PermissionName }).then((permission) => { setMicrophonePermission(permission.state); permission.onchange = () => setMicrophonePermission(permission.state); }).catch(() => setMicrophonePermission("unsupported")); }, []);
@@ -53,9 +54,9 @@ export default function App() {
   useEffect(() => { void isAutostartEnabled().then(setAutostartEnabled).catch(() => setAutostartMessage("Autostart ist auf diesem System nicht verfügbar.")); }, []);
   useEffect(() => { const refresh = () => void refreshSystemStatus(); window.addEventListener("focus", refresh); return () => window.removeEventListener("focus", refresh); }, []);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 4000); return () => window.clearTimeout(timer); }, [toast]);
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen<RewriteToken>("rewrite-token", (event) => { if (event.payload.requestId === rewriteRequestRef.current) { const words = event.payload.token.trim().split(/\s+/).filter(Boolean).length; generatedWordsRef.current += words; setStatus(`Schreibe lokal … ${generatedWordsRef.current} Wörter`); setText((current) => current + event.payload.token); } }).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen<DownloadProgress>("model-download-progress", (event) => setDownloadProgress((current) => ({ ...current, [event.payload.modelId]: event.payload }))).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen<{ modelId: string; phase: string; message: string }>("model-activation-status", (event) => { setModelMessage(event.payload.message); if (event.payload.phase === "activated" || event.payload.phase === "error") { if (activationTimeoutRef.current) { window.clearTimeout(activationTimeoutRef.current); activationTimeoutRef.current = null; } } }).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
+  useEffect(() => { return disposeWhenUnmounted(listen<RewriteToken>("rewrite-token", (event) => { if (event.payload.requestId === rewriteRequestRef.current) { const words = event.payload.token.trim().split(/\s+/).filter(Boolean).length; generatedWordsRef.current += words; setStatus(`Schreibe lokal … ${generatedWordsRef.current} Wörter`); setText((current) => current + event.payload.token); } })); }, []);
+  useEffect(() => { return disposeWhenUnmounted(listen<DownloadProgress>("model-download-progress", (event) => setDownloadProgress((current) => ({ ...current, [event.payload.modelId]: event.payload })))); }, []);
+  useEffect(() => { return disposeWhenUnmounted(listen<{ modelId: string; phase: string; message: string }>("model-activation-status", (event) => { setModelMessage(event.payload.message); if (event.payload.phase === "activated" || event.payload.phase === "error") { if (activationTimeoutRef.current) { window.clearTimeout(activationTimeoutRef.current); activationTimeoutRef.current = null; } } })); }, []);
   const shortcutApi: GlobalShortcutApi = { isRegistered, register: (accelerator) => register(accelerator, () => undefined), unregister };
   const shortcutRegistrationRef = useRef<ShortcutRegistration | null>(null);
   const commandShortcutRegistrationRef = useRef<ShortcutRegistration | null>(null);
@@ -65,15 +66,13 @@ export default function App() {
   const commandShortcutRegistration = commandShortcutRegistrationRef.current;
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<NativeShortcutEvent>("global-shortcut", (event) => {
+    return disposeWhenUnmounted(listen<NativeShortcutEvent>("global-shortcut", (event) => {
       const triggered = canonicalShortcut(event.payload.shortcut);
       const recordingShortcut = shortcutRegistration.active;
       const commandShortcut = commandShortcutRegistration.active;
       if (recordingShortcut && triggered === canonicalShortcut(recordingShortcut)) shortcutActionRef.current(event.payload.state);
       else if (commandShortcut && triggered === canonicalShortcut(commandShortcut)) commandShortcutActionRef.current(event.payload.state);
-    }).then((dispose) => { unlisten = dispose; });
-    return () => unlisten?.();
+    }));
   }, []);
 
   useEffect(() => {
@@ -101,11 +100,15 @@ export default function App() {
   }, [ready]);
 
   const stop = useCallback(async () => {
-    if (!stopRef.current) return;
+    // Claim the recorder synchronously so repeated silence, release, or toggle events cannot finish and transcribe it twice.
+    const recorder = stopRef.current;
+    if (recordingKindRef.current !== "dictation") return;
+    if (!recorder) { pendingStopRef.current = "dictation"; return; }
+    stopRef.current = null; recordingKindRef.current = null; pendingStopRef.current = null;
     silenceStartedAtRef.current = null; autoStoppingRef.current = false;
-    try { setBusy(true); void invoke("hide_dictation_overlay"); setStatus("Wird vollständig lokal transkribiert …"); const { wavBase64, sampleCount } = await stopRef.current.finish(); stopRef.current = null;
-      // WPM measures spoken recording time only, never transcription, rewriting, or paste latency.
-      const durationSeconds = recordingStartedAtRef.current ? Math.max(1, (Date.now() - recordingStartedAtRef.current) / 1000) : undefined; recordingStartedAtRef.current = null;
+    try { setBusy(true); void invoke("hide_dictation_overlay"); setStatus("Wird vollständig lokal transkribiert …"); const { wavBase64, sampleCount } = await recorder.finish();
+      // WPM measures recorded microphone audio only (16 kHz mono), never transcription, rewriting, or paste latency.
+      const durationSeconds = sampleCount / 16_000;
       if (sampleCount < 4_800) { setStatus("Die Aufnahme war zu kurz oder leer. Bitte sprich etwas länger."); setBusy(false); return; }
       const output = await invoke<string>("transcribe_local", { request: { wavBase64, language: settings.language } });
       let polished = polishTranscript(output, settings.tone, settings.processing, settings.dictionary);
@@ -116,16 +119,19 @@ export default function App() {
       } else { setStatus("Fertig — nur auf diesem Gerät verarbeitet"); }
     } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } finally { setBusy(false); }
   }, [settings, systemStatus]);
-  const cancelRecording = useCallback(async () => { silenceStartedAtRef.current = null; autoStoppingRef.current = false; const recorder = stopRef.current; if (!recorder) return; stopRef.current = null; try { await recorder.discard(); recordingStartedAtRef.current = null; setStatus("Aufnahme verworfen"); } finally { void invoke("hide_dictation_overlay"); } }, []);
+  const cancelRecording = useCallback(async () => { const recorder = stopRef.current; if (!recorder || recordingKindRef.current !== "dictation") return; silenceStartedAtRef.current = null; autoStoppingRef.current = false; stopRef.current = null; recordingKindRef.current = null; try { await recorder.discard(); setStatus("Aufnahme verworfen"); } finally { void invoke("hide_dictation_overlay"); } }, []);
   cancelRef.current = () => { void cancelRecording(); };
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen("dictation-cancel", () => cancelRef.current()).then((dispose) => { unlisten = dispose; }); return () => unlisten?.(); }, []);
+  useEffect(() => { return disposeWhenUnmounted(listen("dictation-cancel", () => cancelRef.current())); }, []);
 
   const stopCommand = useCallback(async () => {
-    if (!stopRef.current) return;
+    const recorder = stopRef.current;
+    if (recordingKindRef.current !== "command") return;
+    if (!recorder) { pendingStopRef.current = "command"; return; }
+    stopRef.current = null; recordingKindRef.current = null; pendingStopRef.current = null;
     silenceStartedAtRef.current = null;
     try {
       setRecordingCommand(true); setStatus("Sprachbefehl wird transkribiert …");
-      const { wavBase64, sampleCount } = await stopRef.current.finish(); stopRef.current = null;
+      const { wavBase64, sampleCount } = await recorder.finish();
       if (sampleCount < 4_800) { setStatus("Die Aufnahme war zu kurz. Versuche es erneut mit einem längeren Befehl."); setRecordingCommand(false); return; }
       const output = await invoke<string>("transcribe_local", { request: { wavBase64, language: settings.language } });
       setStatus("Führe Befehl aus …");
@@ -133,30 +139,31 @@ export default function App() {
       setStatus(result);
       setToast({ title: "Befehl ausgeführt", subtitle: output });
     } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } finally { setRecordingCommand(false); }
-  }, [settings.customAppCommands]);
+  }, [settings.customAppCommands, settings.language]);
 
   const startCommandRecording = useCallback(async () => {
-    if (stopRef.current || recordingCommand) return;
+    if (stopRef.current || recordingKindRef.current || recordingCommand) return;
     if (microphonePermission === "denied") { setStatus("Bitte erlaube Voicely den Mikrofonzugriff in den Systemeinstellungen."); return; }
+    recordingKindRef.current = "command"; pendingStopRef.current = null;
     try {
-      silenceStartedAtRef.current = null; recordingStartedAtRef.current = Date.now();
+      silenceStartedAtRef.current = null;
       stopRef.current = await recordWav(setRecording, (level) => {
-        if (settings.commandMode !== "toggle" || !stopRef.current) return;
+        if (settings.commandMode !== "toggle" || !stopRef.current || recordingKindRef.current !== "command") return;
         if (level > 0.025) { silenceStartedAtRef.current = null; return; }
         if (silenceStartedAtRef.current === null) { silenceStartedAtRef.current = Date.now(); return; }
         if (Date.now() - silenceStartedAtRef.current >= 3000) { void stopCommand(); }
       }, settings.microphoneId, settings.audioProcessing);
+      if (pendingStopRef.current === "command") { pendingStopRef.current = null; await stopCommand(); return; }
       setStatus("Sprachbefehl wird erkannt …");
-    } catch { stopRef.current = null; setStatus("Mikrofonzugriff wurde nicht erteilt."); }
-  }, [microphonePermission, settings.microphoneId, settings.audioProcessing, settings.commandMode, stopCommand]);
+    } catch { if (recordingKindRef.current === "command") { stopRef.current = null; recordingKindRef.current = null; pendingStopRef.current = null; } setStatus("Mikrofonzugriff wurde nicht erteilt."); }
+  }, [microphonePermission, settings.microphoneId, settings.audioProcessing, settings.commandMode, recordingCommand, stopCommand]);
 
-  const cancelCommandRecording = useCallback(async () => { silenceStartedAtRef.current = null; const recorder = stopRef.current; if (!recorder) return; stopRef.current = null; try { await recorder.discard(); recordingStartedAtRef.current = null; setStatus("Sprachbefehl abgebrochen"); } finally { setRecordingCommand(false); } }, []);
-  const handleAudioLevel = useCallback((level: number) => { void emit("dictation-level", { level }); if (settings.recordingMode !== "toggle" || settings.silenceSeconds === 0 || !stopRef.current || busy) { silenceStartedAtRef.current = null; return; } if (level > 0.025) { silenceStartedAtRef.current = null; return; } if (silenceStartedAtRef.current === null) { silenceStartedAtRef.current = Date.now(); return; } if (!autoStoppingRef.current && Date.now() - silenceStartedAtRef.current >= settings.silenceSeconds * 1000) { autoStoppingRef.current = true; setStatus(`${settings.silenceSeconds} Sekunden Stille erkannt — Aufnahme wird beendet …`); void stop(); } }, [busy, settings.recordingMode, settings.silenceSeconds, stop]);
-  const startRecording = useCallback(async () => { if (stopRef.current || busy) return; if (microphonePermission === "denied") { setStatus("Bitte erlaube Voicely den Mikrofonzugriff in den Systemeinstellungen."); return; } try { silenceStartedAtRef.current = null; autoStoppingRef.current = false; recordingStartedAtRef.current = Date.now(); stopRef.current = await recordWav(setRecording, handleAudioLevel, settings.microphoneId, settings.audioProcessing); void invoke("show_dictation_overlay").catch(() => undefined); setStatus("Aufnahme läuft — sprich jetzt"); } catch { stopRef.current = null; void invoke("hide_dictation_overlay"); setStatus("Mikrofonzugriff wurde nicht erteilt."); } }, [busy, microphonePermission, handleAudioLevel, settings.microphoneId, settings.audioProcessing]);
-  const toggleRecording = useCallback(async () => { if (recording) await stop(); else await startRecording(); }, [recording, startRecording, stop]);
+    const handleAudioLevel = useCallback((level: number) => { void emit("dictation-level", { level }); if (settings.recordingMode !== "toggle" || settings.silenceSeconds === 0 || !stopRef.current || busy) { silenceStartedAtRef.current = null; return; } if (level > 0.025) { silenceStartedAtRef.current = null; return; } if (silenceStartedAtRef.current === null) { silenceStartedAtRef.current = Date.now(); return; } if (!autoStoppingRef.current && Date.now() - silenceStartedAtRef.current >= settings.silenceSeconds * 1000) { autoStoppingRef.current = true; setStatus(`${settings.silenceSeconds} Sekunden Stille erkannt — Aufnahme wird beendet …`); void stop(); } }, [busy, settings.recordingMode, settings.silenceSeconds, stop]);
+  const startRecording = useCallback(async () => { if (stopRef.current || recordingKindRef.current || busy) return; if (microphonePermission === "denied") { setStatus("Bitte erlaube Voicely den Mikrofonzugriff in den Systemeinstellungen."); return; } recordingKindRef.current = "dictation"; pendingStopRef.current = null; try { silenceStartedAtRef.current = null; autoStoppingRef.current = false; stopRef.current = await recordWav(setRecording, handleAudioLevel, settings.microphoneId, settings.audioProcessing); if (pendingStopRef.current === "dictation") { pendingStopRef.current = null; await stop(); return; } void invoke("show_dictation_overlay").catch(() => undefined); setStatus("Aufnahme läuft — sprich jetzt"); } catch { if (recordingKindRef.current === "dictation") { stopRef.current = null; recordingKindRef.current = null; pendingStopRef.current = null; } void invoke("hide_dictation_overlay"); setStatus("Mikrofonzugriff wurde nicht erteilt."); } }, [busy, microphonePermission, handleAudioLevel, settings.microphoneId, settings.audioProcessing, stop]);
+  const toggleRecording = useCallback(async () => { if (recordingKindRef.current === "dictation") await stop(); else await startRecording(); }, [startRecording, stop]);
   shortcutActionRef.current = (state) => { if (settings.recordingMode === "pushToTalk") { if (state === "Pressed") { pushHeldRef.current = true; void startRecording().then(() => { if (!pushHeldRef.current) void stop(); }); } else { pushHeldRef.current = false; void stop(); } } else if (state === "Pressed") { void toggleRecording(); } };
 
-  commandShortcutActionRef.current = (state) => { if (settings.commandMode === "pushToTalk") { if (state === "Pressed") { commandPushHeldRef.current = true; void startCommandRecording().then(() => { if (!commandPushHeldRef.current) void stopCommand(); }); } else { commandPushHeldRef.current = false; void stopCommand(); } } else if (state === "Pressed") { if (recordingCommand) void cancelCommandRecording(); else void startCommandRecording(); } };
+  commandShortcutActionRef.current = (state) => { if (settings.commandMode === "pushToTalk") { if (state === "Pressed") { commandPushHeldRef.current = true; void startCommandRecording().then(() => { if (!commandPushHeldRef.current) void stopCommand(); }); } else { commandPushHeldRef.current = false; void stopCommand(); } } else if (state === "Pressed") { if (recordingKindRef.current === "command") void stopCommand(); else void startCommandRecording(); } };
   async function toggleShortcut() { if (shortcut) { await shortcutRegistration.clear(); setShortcut(false); setStatus("Globaler Shortcut deaktiviert"); return; } try { await shortcutRegistration.set(settings.shortcut, (event) => shortcutActionRef.current(event.state)); setShortcut(true); setStatus(`Shortcut aktiv: ${settings.shortcut}`); } catch { setStatus("Der Shortcut ist bereits belegt oder nicht verfügbar."); } }
   function captureShortcut(event: React.KeyboardEvent<HTMLInputElement>) {
     event.preventDefault();

@@ -171,11 +171,14 @@ fn download_model_file(app: &AppHandle, downloads: &DownloadState, model: &Model
     downloads.0.lock().map_err(|_| "Downloadstatus konnte nicht gesperrt werden.")?.remove(&model_id);
     if fs::metadata(&target).map(|meta| meta.len() >= model.min_bytes).unwrap_or(false) { return Ok(()); }
     let existing = fs::metadata(&temporary).map(|meta| meta.len()).unwrap_or(0);
-    if existing >= model.min_bytes { return finalize_downloaded_model(&temporary, &target, model.sha256); }
     if wifi_only && !on_wifi() { return Err("Große Modelldownloads sind auf WLAN beschränkt. Verbinde dich mit einem WLAN oder deaktiviere die Einstellung.".into()); }
     let client = reqwest::blocking::Client::new(); let mut request = client.get(model.url);
     if existing > 0 { request = request.header(reqwest::header::RANGE, format!("bytes={existing}-")); }
-    let mut response = request.send().map_err(|e| format!("Modelldownload konnte nicht gestartet werden: {e}"))?.error_for_status().map_err(|e| format!("Modelldownload fehlgeschlagen: {e}"))?;
+    let response = request.send().map_err(|e| format!("Modelldownload konnte nicht gestartet werden: {e}"))?;
+    // `min_bytes` is only a lower bound, so a partial file above it may still be incomplete.
+    // The server answers 416 only once the partial file already contains the whole model.
+    if existing > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE { return finalize_downloaded_model(&temporary, &target, model.sha256); }
+    let mut response = response.error_for_status().map_err(|e| format!("Modelldownload fehlgeschlagen: {e}"))?;
     let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT; let downloaded_start = if resumed { existing } else { 0 };
     let total = response.content_length().map(|length| length + downloaded_start);
     let mut file = if resumed { fs::OpenOptions::new().append(true).open(&temporary) } else { fs::File::create(&temporary) }.map_err(|e| format!("Modell konnte nicht gespeichert werden: {e}"))?;
@@ -189,7 +192,7 @@ fn download_model_file(app: &AppHandle, downloads: &DownloadState, model: &Model
         if downloaded - last_emitted >= 1_048_576 { last_emitted = downloaded; app.emit("model-download-progress", DownloadProgress { model_id: model_id.clone(), downloaded_bytes: downloaded, total_bytes: total }).map_err(|e| e.to_string())?; }
     }
     app.emit("model-download-progress", DownloadProgress { model_id: model_id.clone(), downloaded_bytes: downloaded, total_bytes: total }).map_err(|e| e.to_string())?;
-    if downloaded < model.min_bytes { return Err("Der Modelldownload ist unvollständig. Du kannst ihn später fortsetzen.".into()); }
+    if downloaded < model.min_bytes || total.is_some_and(|total| downloaded < total) { return Err("Der Modelldownload ist unvollständig. Du kannst ihn später fortsetzen.".into()); }
     finalize_downloaded_model(&temporary, &target, model.sha256)
 }
 fn active_text_model_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -324,12 +327,19 @@ fn strip_thinking(output: &str) -> String {
     }
     text.trim().to_string()
 }
+fn terminate_worker(workers: &LlmWorkerState, handle: &Arc<LlmWorkerHandle>) {
+    if let Ok(mut child) = handle.child.lock() { let _ = child.kill(); let _ = child.wait(); }
+    if let Ok(mut active) = workers.active.lock() {
+        if active.as_ref().map(|current| Arc::ptr_eq(current, handle)).unwrap_or(false) { *active = None; }
+    }
+}
 fn generate_local(app: &AppHandle, workers: &LlmWorkerState, request_id: &str, model_path: PathBuf, prompt: &str) -> Result<String, String> {
     let handle = spawn_worker(app, workers, model_path)?;
     let (sender, receiver) = std::sync::mpsc::channel();
     workers.pending.lock().map_err(|_| "LLM-Workerstatus konnte nicht gesperrt werden.")?.insert(request_id.into(), sender);
     let request = serde_json::json!({ "type": "generate", "id": request_id, "prompt": prompt, "max_tokens": 512 });
-    { let mut stdin = handle.stdin.lock().map_err(|_| "LLM-Worker-Eingabe konnte nicht gesperrt werden.")?; writeln!(stdin, "{request}").map_err(|e| format!("Anfrage an den lokalen Schreib-Worker fehlgeschlagen: {e}"))?; }
+    let sent = handle.stdin.lock().map_err(|_| "LLM-Worker-Eingabe konnte nicht gesperrt werden.".to_string()).and_then(|mut stdin| writeln!(stdin, "{request}").map_err(|e| format!("Anfrage an den lokalen Schreib-Worker fehlgeschlagen: {e}")));
+    if let Err(error) = sent { if let Ok(mut pending) = workers.pending.lock() { pending.remove(request_id); } return Err(error); }
     *handle.last_used.lock().map_err(|_| "LLM-Workerstatus konnte nicht gesperrt werden.")? = Instant::now();
     let mut output = String::new();
     let result: Result<(), String> = loop {
@@ -338,7 +348,20 @@ fn generate_local(app: &AppHandle, workers: &LlmWorkerState, request_id: &str, m
             Ok(WorkerEvent::Done) => break Ok(()),
             Ok(WorkerEvent::Error(message)) => break Err(message),
             Ok(WorkerEvent::Cancelled) => break Err("Die lokale Umformulierung wurde abgebrochen.".into()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break Err("Die lokale Textaktion hat nach 90 Sekunden keine Antwort geliefert und wurde beendet.".into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Keep the worker unavailable until cancellation has completed, or replace it if decode remains stuck.
+                if let Ok(mut stdin) = handle.stdin.lock() { let _ = writeln!(stdin, "{}", serde_json::json!({ "type": "cancel", "id": request_id })); }
+                let cancellation_deadline = Instant::now() + Duration::from_secs(5);
+                let cancelled = loop {
+                    match receiver.recv_timeout(cancellation_deadline.saturating_duration_since(Instant::now())) {
+                        Ok(WorkerEvent::Token(_)) => continue,
+                        Ok(WorkerEvent::Done | WorkerEvent::Error(_) | WorkerEvent::Cancelled) => break true,
+                        Err(_) => break false,
+                    }
+                };
+                if !cancelled { terminate_worker(workers, &handle); }
+                break Err("Die lokale Textaktion hat nach 90 Sekunden keine Antwort geliefert und wurde beendet.".into())
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err("Verbindung zum lokalen Schreib-Worker wurde unterbrochen.".into()),
         }
     };
@@ -492,6 +515,7 @@ fn active_window_overlay_position() -> Option<(f64, f64)> {
     { None }
 }
 
+// Keep show/hide synchronous so they apply in call order; only the slow osascript lookup runs off the main thread.
 #[tauri::command]
 fn show_dictation_overlay(app: AppHandle) -> Result<(), String> {
     let overlay = app.get_webview_window("dictation").ok_or("Diktat-Leiste wurde nicht initialisiert.")?;
@@ -500,9 +524,11 @@ fn show_dictation_overlay(app: AppHandle) -> Result<(), String> {
     // location, then move to the focused window only if its coordinates are sane.
     let _ = overlay.center();
     overlay.show().map_err(|e| format!("Diktat-Leiste konnte nicht eingeblendet werden: {e}"))?;
-    if let Some((x, y)) = active_window_overlay_position().filter(|(x, y)| x.is_finite() && y.is_finite() && *x > -10_000.0 && *x < 10_000.0 && *y > -10_000.0 && *y < 10_000.0) {
-        if overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y))).is_err() { let _ = overlay.center(); }
-    }
+    thread::spawn(move || {
+        if let Some((x, y)) = active_window_overlay_position().filter(|(x, y)| x.is_finite() && y.is_finite() && *x > -10_000.0 && *x < 10_000.0 && *y > -10_000.0 && *y < 10_000.0) {
+            if overlay.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y))).is_err() { let _ = overlay.center(); }
+        }
+    });
     Ok(())
 }
 #[tauri::command]
@@ -525,31 +551,37 @@ async fn request_accessibility_permission() -> bool {
 #[derive(Deserialize)] #[serde(rename_all = "camelCase")]
 struct CustomAppCommand { phrase: String, app_path: String }
 
-#[tauri::command]
+/// Whisper capitalises and punctuates transcripts ("Öffne Mail."), so compare commands by words only.
+fn normalize_voice_command(value: &str) -> String {
+    value.to_lowercase().split_whitespace().map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')).filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" ")
+}
+fn resolve_voice_command(command: &str, custom_apps: &[CustomAppCommand]) -> Option<(String, bool)> {
+    let normalized = normalize_voice_command(command);
+    match normalized.as_str() {
+        "öffne meine e-mails" | "öffne meine emails" | "öffne mail" => Some(("Mail".to_string(), false)),
+        "öffne kalender" | "öffne meinen kalender" => Some(("Calendar".to_string(), false)),
+        "öffne iterm" | "öffne terminal" | "öffne mein terminal" => Some(("iTerm".to_string(), false)),
+        "öffne notizen" | "öffne meine notizen" => Some(("Notes".to_string(), false)),
+        _ => custom_apps.iter().find(|entry| !normalized.is_empty() && normalized == normalize_voice_command(&entry.phrase)).map(|entry| (entry.app_path.clone(), true)),
+    }
+}
+#[tauri::command(async)]
 fn execute_voice_command(command: String, custom_apps: Vec<CustomAppCommand>) -> Result<String, String> {
-    let normalized = command.trim().to_lowercase();
-    let app = match normalized.as_str() {
-        "öffne meine e-mails" | "öffne meine emails" | "öffne mail" => Some("Mail".to_string()),
-        "öffne kalender" | "öffne meinen kalender" => Some("Calendar".to_string()),
-        "öffne iterm" | "öffne terminal" | "öffne mein terminal" => Some("iTerm".to_string()),
-        "öffne notizen" | "öffne meine notizen" => Some("Notes".to_string()),
-        _ => custom_apps.iter().find(|entry| normalized == entry.phrase.trim().to_lowercase()).map(|entry| entry.app_path.clone()),
-    }.ok_or_else(|| "Befehl nicht erkannt. Verfügbar sind Mail, Kalender, iTerm, Notizen und deine eigenen App-Befehle.".to_string())?;
-    let is_custom = custom_apps.iter().any(|entry| entry.app_path == app);
+    let (app, is_custom) = resolve_voice_command(&command, &custom_apps).ok_or_else(|| "Befehl nicht erkannt. Verfügbar sind Mail, Kalender, iTerm, Notizen und deine eigenen App-Befehle.".to_string())?;
     if is_custom && (!app.ends_with(".app") || !std::path::Path::new(&app).is_dir()) { return Err("Der konfigurierte App-Befehl verweist nicht auf ein lokales .app-Bundle.".into()); }
     let status = if is_custom { Command::new("open").arg(&app).status() } else { Command::new("open").args(["-a", &app]).status() }.map_err(|error| format!("App konnte nicht geöffnet werden: {error}"))?;
     if !status.success() { return Err("Die gewünschte lokale App konnte nicht geöffnet werden.".into()); }
     Ok(format!("{} wird geöffnet", if is_custom { command } else { app }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn frontmost_application_name() -> Option<String> {
     #[cfg(target_os = "macos")]
     { Command::new("osascript").args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#]).output().ok().and_then(|output| if output.status.success() { Some(String::from_utf8_lossy(&output.stdout).trim().to_string()) } else { None }).filter(|name| !name.is_empty()) }
     #[cfg(not(target_os = "macos"))]
     { None }
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn paste_into_active_app(app: AppHandle, restore_window: Option<bool>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -586,14 +618,30 @@ fn paste_into_active_app(app: AppHandle, restore_window: Option<bool>) -> Result
     #[cfg(not(target_os = "macos"))]
     { let _ = app; Err("Auto-Paste ist derzeit nur für macOS verfügbar.".into()) }
 }
-#[tauri::command]
+// Synchronous Tauri commands run on the main thread; `async` keeps Whisper and osascript calls off the UI thread.
+#[tauri::command(async)]
 fn transcribe_local(app: AppHandle, request: TranscriptionRequest) -> Result<String, String> {
     let audio = STANDARD.decode(request.wav_base64).map_err(|_| "Ungültige Audiodaten")?;
     let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?; fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let input = cache.join(format!("dictation-{}.wav", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis()));
-    fs::write(&input, audio).map_err(|e| format!("Audio konnte nicht an Whisper übergeben werden: {e}"))?;
-    let result = std::process::Command::new(whisper_worker_path(&app)?).args([active_whisper_model_path(&app)?.to_str().ok_or("Ungültiger Modellpfad")?, input.to_str().ok_or("Ungültiger Audiopfad")?, request.language.as_deref().unwrap_or("auto")]).output().map_err(|e| format!("Integrierter Whisper-Worker konnte nicht gestartet werden: {e}"))?;
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+    let (input, mut file) = (0_u64..).find_map(|attempt| {
+        let path = cache.join(format!("dictation-{timestamp}-{attempt}.wav"));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => Some(Ok((path, file))),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+            Err(error) => Some(Err(error)),
+        }
+    }).ok_or_else(|| "Kein eindeutiger Audiopfad konnte angelegt werden.".to_string())?.map_err(|e| format!("Audio konnte nicht an Whisper übergeben werden: {e}"))?;
+    if let Err(error) = file.write_all(&audio) { let _ = fs::remove_file(&input); return Err(format!("Audio konnte nicht an Whisper übergeben werden: {error}")); }
+    drop(file);
+    let transcription = (|| {
+        std::process::Command::new(whisper_worker_path(&app)?)
+            .args([active_whisper_model_path(&app)?.to_str().ok_or("Ungültiger Modellpfad")?, input.to_str().ok_or("Ungültiger Audiopfad")?, request.language.as_deref().unwrap_or("auto")])
+            .output()
+            .map_err(|e| format!("Integrierter Whisper-Worker konnte nicht gestartet werden: {e}"))
+    })();
     let _ = fs::remove_file(&input);
+    let result = transcription?;
     if !result.status.success() { return Err(String::from_utf8_lossy(&result.stderr).trim().to_string()); }
     let text = String::from_utf8(result.stdout).map_err(|_| "Whisper lieferte ungültigen Text.")?;
     if text.trim().is_empty() { return Err("Whisper hat keinen Text erkannt.".into()); } Ok(text.trim().into())
@@ -639,6 +687,16 @@ mod tests {
         assert!(active_network_interface("inet 192.168.2.177 netmask 0xffffff00\nstatus: active"));
         assert!(!active_network_interface("status: inactive"));
         assert!(!active_network_interface("status: active"));
+    }
+
+    #[test]
+    fn voice_commands_ignore_whisper_punctuation_and_case() {
+        let custom = vec![CustomAppCommand { phrase: "Öffne Notion".into(), app_path: "/Applications/Notion.app".into() }];
+        assert_eq!(resolve_voice_command("Öffne Mail.", &custom), Some(("Mail".to_string(), false)));
+        assert_eq!(resolve_voice_command("  öffne   meine E-Mails! ", &custom), Some(("Mail".to_string(), false)));
+        assert_eq!(resolve_voice_command("Öffne Notion.", &custom), Some(("/Applications/Notion.app".to_string(), true)));
+        assert_eq!(resolve_voice_command("Lösche alles.", &custom), None);
+        assert_eq!(resolve_voice_command("...", &[CustomAppCommand { phrase: "".into(), app_path: "/Applications/Notion.app".into() }]), None);
     }
 
     #[test]
