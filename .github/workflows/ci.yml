@@ -43,6 +43,9 @@ jobs:
           path: src-tauri/resources/models/ggml-small.bin
           key: whisper-small-1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b-${{ runner.os }}-${{ runner.arch }}
 
+      - name: Prepare Whisper Small model
+        run: npm run prepare:models
+
       - name: Check frontend
         run: npm run build
 
