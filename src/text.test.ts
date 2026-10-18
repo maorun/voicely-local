@@ -24,4 +24,18 @@ describe("polishTranscript", () => {
     expect(polishTranscript("foo_bar bar", "neutral", "light", "")).toBe("Foo_bar bar.");
     expect(polishTranscript("foo_bar bar_baz", "neutral", "light", "")).toBe("Foo_bar bar_baz.");
   });
+
+  it("converts spoken paragraphs and additional punctuation marks", () => {
+    expect(polishTranscript("Erster Satz punkt neuer Absatz zweiter Satz punkt", "neutral", "light", "")).toBe("Erster Satz.\n\nZweiter Satz.");
+    expect(polishTranscript("Ein Satz punkt absatz Nächster Satz punkt", "neutral", "light", "")).toBe("Ein Satz.\n\nNächster Satz.");
+    expect(polishTranscript("Erster Teil semikolon zweiter Teil punkt", "neutral", "light", "")).toBe("Erster Teil; zweiter Teil.");
+    expect(polishTranscript("Wort strichpunkt anderes Wort punkt", "neutral", "light", "")).toBe("Wort; anderes Wort.");
+    expect(polishTranscript("Das ist wichtig gedankenstrich bitte beachten punkt", "neutral", "light", "")).toBe("Das ist wichtig — bitte beachten.");
+    expect(polishTranscript("Nord bindestrich Süd punkt", "neutral", "light", "")).toBe("Nord-Süd.");
+  });
+
+  it("formats enumerations up to ten items", () => {
+    expect(polishTranscript("erstens Äpfel doppelpunkt zweitens Birnen komma sechstens Pflaumen", "neutral", "light", "")).toBe("• Äpfel:\n• Birnen,\n• Pflaumen");
+    expect(polishTranscript("zehntens Kirschen punkt", "neutral", "light", "")).toBe("• Kirschen.");
+  });
 });

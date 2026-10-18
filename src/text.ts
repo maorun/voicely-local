@@ -4,8 +4,12 @@ export type ProcessingLevel = "light" | "standard" | "strong";
 const fillerWords = ["äh", "ähm", "eh", "hm", "mhm", "äh also", "also äh", "sozusagen", "quasi", "im prinzip", "eigentlich", "halt", "you know", "um", "uh"];
 // Spoken punctuation must be a whole word, otherwise words such as "Kommando" or "Punktzahl" are split.
 const spokenPunctuation: Array<[RegExp, string]> = [
-  [/\s+komma(?![\p{L}\p{N}])\s*/giu, ", "], [/\s+punkt(?![\p{L}\p{N}])\s*/giu, ". "], [/\s+doppelpunkt(?![\p{L}\p{N}])\s*/giu, ": "],
-  [/\s+ausrufezeichen(?![\p{L}\p{N}])\s*/giu, "! "], [/\s+fragezeichen(?![\p{L}\p{N}])\s*/giu, "? "], [/\s+neue zeile(?![\p{L}\p{N}])\s*/giu, "\n"],
+  [/\s+komma(?![\p{L}\p{N}])[ \t]*/giu, ", "], [/\s+punkt(?![\p{L}\p{N}])[ \t]*/giu, ". "], [/\s+doppelpunkt(?![\p{L}\p{N}])[ \t]*/giu, ": "],
+  [/\s+semikolon(?![\p{L}\p{N}])[ \t]*/giu, "; "], [/\s+strichpunkt(?![\p{L}\p{N}])[ \t]*/giu, "; "],
+  [/\s+ausrufezeichen(?![\p{L}\p{N}])[ \t]*/giu, "! "], [/\s+fragezeichen(?![\p{L}\p{N}])[ \t]*/giu, "? "],
+  [/\s+gedankenstrich(?![\p{L}\p{N}])[ \t]*/giu, " — "], [/\s+bindestrich(?![\p{L}\p{N}])[ \t]*/giu, "-"],
+  [/\s+neuer absatz(?![\p{L}\p{N}])\s*/giu, "\n\n"], [/\s+absatz(?![\p{L}\p{N}])\s*/giu, "\n\n"],
+  [/\s+neue zeile(?![\p{L}\p{N}])\s*/giu, "\n"],
 ];
 
 /** Applies only deterministic, on-device transformations; it never calls a model or service. */
@@ -64,7 +68,7 @@ function applyDictionary(text: string, dictionary: string) {
 }
 
 function formatEnumerations(text: string) {
-  return text.replace(/\b(?:erstens|zweitens|drittens|viertens|fünftens)\b\s*[:,]?\s*/giu, "\n• ");
+  return text.replace(/\b(?:erstens|zweitens|drittens|viertens|fünftens|sechstens|siebtens|achtens|neuntens|zehntens)\b\s*[:,]?\s*/giu, "\n• ");
 }
 
 function normalizeSpacing(text: string) {
@@ -72,12 +76,15 @@ function normalizeSpacing(text: string) {
 }
 
 function finishSentences(text: string) {
-  const sentences = text.split(/(?<=[.!?])\s+|\n/).map((part) => {
-    const value = part.trim(); if (!value) return "";
-    const capped = value.replace(/^([a-zäöü])/u, (letter) => letter.toUpperCase());
-    return /[.!?:;]$/.test(capped) || capped.startsWith("•") ? capped : `${capped}.`;
+  const paragraphs = text.split(/\n{2,}/).map((paragraph) => {
+    const sentences = paragraph.split(/(?<=[.!?])\s+|\n/).map((part) => {
+      const value = part.trim(); if (!value) return "";
+      const capped = value.replace(/^([a-zäöü])/u, (letter) => letter.toUpperCase());
+      return /[.!?:;—–-]$/.test(capped) || capped.startsWith("•") ? capped : `${capped}.`;
+    });
+    return sentences.filter(Boolean).join("\n");
   });
-  return sentences.filter(Boolean).join("\n");
+  return paragraphs.filter(Boolean).join("\n\n");
 }
 
 function applyTone(text: string, tone: Tone) {
