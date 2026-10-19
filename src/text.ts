@@ -59,11 +59,21 @@ function removeSimpleFalseStarts(text: string) {
 }
 
 function applyDictionary(text: string, dictionary: string) {
-  return dictionary.split("\n").reduce((result, line) => {
-    const [spoken, written, ...extra] = line.split("=>").map((part) => part.trim());
-    if (!spoken || !written || extra.length) return result;
+  if (!dictionary) return text;
+  return dictionary.split(/\r?\n/).reduce((result, line) => {
+    const trimmedLine = line.trim();
+    if (!trimmedLine || trimmedLine.startsWith("#")) return result;
+    const parts = trimmedLine.split("=>");
+    if (parts.length < 2) return result;
+    const spoken = parts[0].trim();
+    const written = parts.slice(1).join("=>").trim();
+    if (!spoken || !written) return result;
     // `\b` is ASCII-only in JavaScript, so it never matches next to umlauts; use Unicode-aware boundaries.
-    return result.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(spoken)}(?![\\p{L}\\p{N}_])`, "giu"), () => written);
+    const escapedSpoken = spoken
+      .split(/\s+/)
+      .map(escapeRegExp)
+      .join("\\s+");
+    return result.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escapedSpoken}(?![\\p{L}\\p{N}_])`, "giu"), () => written);
   }, text);
 }
 

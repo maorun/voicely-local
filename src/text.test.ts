@@ -38,4 +38,15 @@ describe("polishTranscript", () => {
     expect(polishTranscript("erstens Äpfel doppelpunkt zweitens Birnen komma sechstens Pflaumen", "neutral", "light", "")).toBe("• Äpfel:\n• Birnen,\n• Pflaumen");
     expect(polishTranscript("zehntens Kirschen punkt", "neutral", "light", "")).toBe("• Kirschen.");
   });
+
+  it("ignores comments and blank lines in dictionary configuration", () => {
+    const dict = "# Dictionary config\n\nred => blue\n  \n# another comment\ncat => dog";
+    expect(polishTranscript("red cat", "neutral", "light", dict)).toBe("Blue dog.");
+  });
+
+  it("supports multi-word dictionary entries with flexible whitespace and punctuation cleanup", () => {
+    const dict = "new york => New York";
+    expect(polishTranscript("treffen in new  york punkt", "neutral", "light", dict)).toBe("Treffen in New York.");
+    expect(polishTranscript("new  york komma gut punkt", "neutral", "light", dict)).toBe("New York, gut.");
+  });
 });
