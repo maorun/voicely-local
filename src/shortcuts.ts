@@ -3,9 +3,45 @@ export type ShortcutHandler = (event: { state: ShortcutState }) => void;
 export type KeyboardShortcutEvent = { key: string; code: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean };
 
 export function acceleratorFromKeyboardEvent(event: KeyboardShortcutEvent): string | null {
-  if (["Meta", "Control", "Alt", "Shift"].includes(event.key)) return null;
-  const key = event.code === "Space" ? "Space" : event.code.startsWith("Key") ? event.code.slice(3) : event.code.startsWith("Digit") ? event.code.slice(5) : event.key.length === 1 ? event.key.toUpperCase() : event.key;
-  const modifiers = [event.metaKey ? "Command" : "", event.ctrlKey ? "Control" : "", event.altKey ? "Alt" : "", event.shiftKey ? "Shift" : ""].filter(Boolean);
+  if (!event || !event.key) return null;
+  const ignoredKeys = [
+    "Meta", "Control", "Alt", "Shift",
+    "OS", "Win", "Command", "Super", "Hyper",
+    "ControlLeft", "ControlRight",
+    "ShiftLeft", "ShiftRight",
+    "AltLeft", "AltRight",
+    "MetaLeft", "MetaRight",
+    "Unidentified", "Dead"
+  ];
+  if (ignoredKeys.includes(event.key) || ignoredKeys.includes(event.code)) {
+    return null;
+  }
+
+  const key = event.code === "Space"
+    ? "Space"
+    : event.code.startsWith("Key")
+    ? event.code.slice(3)
+    : event.code.startsWith("Digit")
+    ? event.code.slice(5)
+    : event.key.length === 1
+    ? event.key.toUpperCase()
+    : event.key;
+
+  if (!key || ignoredKeys.map((k) => k.toLowerCase()).includes(key.toLowerCase())) {
+    return null;
+  }
+
+  const modifiers = [
+    event.metaKey ? "Command" : "",
+    event.ctrlKey ? "Control" : "",
+    event.altKey ? "Alt" : "",
+    event.shiftKey ? "Shift" : "",
+  ].filter(Boolean);
+
+  if (modifiers.map((m) => m.toLowerCase()).includes(key.toLowerCase())) {
+    return null;
+  }
+
   return [...modifiers, key].join("+");
 }
 

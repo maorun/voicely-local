@@ -70,6 +70,14 @@ describe("replaceGlobalShortcut", () => {
     expect(acceleratorFromKeyboardEvent({ ...key, metaKey: true, ctrlKey: true })).toBe("Command+Control+Shift+D");
   });
 
+  it("gibt null zurück bei Modifikatoren und ungültigen Edge-Case-Eingaben", () => {
+    expect(acceleratorFromKeyboardEvent({ key: "Shift", code: "ShiftLeft", metaKey: false, ctrlKey: false, altKey: false, shiftKey: true })).toBeNull();
+    expect(acceleratorFromKeyboardEvent({ key: "ControlLeft", code: "ControlLeft", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false })).toBeNull();
+    expect(acceleratorFromKeyboardEvent({ key: "Unidentified", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false })).toBeNull();
+    expect(acceleratorFromKeyboardEvent({ key: "", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false })).toBeNull();
+    expect(acceleratorFromKeyboardEvent({ key: "Meta", code: "MetaLeft", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false })).toBeNull();
+  });
+
   it("ordnet native macOS-Shortcut-Namen den gespeicherten Acceleratoren zu", () => {
     expect(canonicalShortcut("CommandOrControl+Shift+D")).toBe(canonicalShortcut("shift+super+KeyD"));
     expect(canonicalShortcut("CommandOrControl+Alt+S")).toBe(canonicalShortcut("alt+super+KeyS"));
