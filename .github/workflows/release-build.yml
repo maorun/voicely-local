@@ -45,7 +45,7 @@ jobs:
         run: npm run dmg:user
 
       - name: Upload DMG
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: Voicely-Local-aarch64-dmg
           path: src-tauri/target/release/bundle/dmg/*.dmg
